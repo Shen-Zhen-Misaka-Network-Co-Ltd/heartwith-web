@@ -248,6 +248,7 @@ fun main() {
             }
 
             LaunchedEffect(Unit) {
+                refresh()
                 val close = openLobbyEvents(
                     "/api/v1/lobby/events",
                     { data ->

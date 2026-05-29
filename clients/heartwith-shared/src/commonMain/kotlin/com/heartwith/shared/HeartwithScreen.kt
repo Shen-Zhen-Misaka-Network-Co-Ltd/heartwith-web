@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +80,14 @@ data class HeartwithUiState(
     val hideFromRecents: Boolean = false,
 )
 
+private data class ParticipantDragState(
+    val collectorId: String,
+    val anchorIndex: Int,
+    val targetIndex: Int,
+    val sourceOrderIds: List<String>,
+    val bounds: Map<String, Rect>,
+)
+
 @Composable
 fun HeartwithScreen(
     state: HeartwithUiState,
@@ -108,22 +117,25 @@ fun HeartwithScreen(
 ) {
     val readOnlyWeb = !canCollect
     val english = readOnlyWeb && useEnglishLabels
-    var draggingParticipantId by remember { mutableStateOf<String?>(null) }
-    var dragPreviewTargetIndex by remember { mutableStateOf<Int?>(null) }
-    var dragAnchorIndex by remember { mutableStateOf<Int?>(null) }
-    var dragFrozenBounds by remember { mutableStateOf<Map<String, Rect>?>(null) }
+    var participantDragState by remember { mutableStateOf<ParticipantDragState?>(null) }
     var participantBounds by remember { mutableStateOf(emptyMap<String, Rect>()) }
     val lobbyParticipants = state.participants
-    val lobbyParticipantIds = lobbyParticipants.map { it.collectorId }
-    val dragPreviewParticipantIds = remember(lobbyParticipantIds, draggingParticipantId, dragPreviewTargetIndex) {
-        val activeId = draggingParticipantId
-        val targetIndex = dragPreviewTargetIndex
-        if (activeId == null || targetIndex == null) {
-            lobbyParticipantIds
+    val dragState = participantDragState
+    val draggingParticipantId = dragState?.collectorId
+    val sourceParticipantIds = dragState?.sourceOrderIds ?: lobbyParticipants.map { it.collectorId }
+    val dragPreviewParticipantIds = remember(sourceParticipantIds, dragState) {
+        if (dragState == null) {
+            sourceParticipantIds
         } else {
-            lobbyParticipantIds.moveIdToIndex(activeId, targetIndex)
+            sourceParticipantIds.moveIdToIndex(dragState.collectorId, dragState.targetIndex)
         }
     }
+    val renderParticipantIds = sourceParticipantIds
+    val renderParticipants = remember(lobbyParticipants, renderParticipantIds) {
+        val byId = lobbyParticipants.associateBy { it.collectorId }
+        renderParticipantIds.mapNotNull { byId[it] }
+    }
+    val gestureOrderKey = sourceParticipantIds.joinToString(separator = "\u001f")
     Scaffold(
         topBar = {
             TopAppBar(
@@ -227,7 +239,7 @@ fun HeartwithScreen(
                                     .widthIn(max = 1280.dp),
                                 verticalArrangement = Arrangement.spacedBy(14.dp),
                             ) {
-                                lobbyParticipants.chunked(participantColumns).forEachIndexed { rowIndex, rowParticipants ->
+                                renderParticipants.chunked(participantColumns).forEachIndexed { rowIndex, rowParticipants ->
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -237,9 +249,9 @@ fun HeartwithScreen(
                                             val visualOffset = participantVisualOffset(
                                                 collectorId = participant.collectorId,
                                                 draggingCollectorId = draggingParticipantId,
-                                                sourceOrderIds = lobbyParticipantIds,
+                                                sourceOrderIds = sourceParticipantIds,
                                                 previewOrderIds = dragPreviewParticipantIds,
-                                                frozenBounds = dragFrozenBounds,
+                                                frozenBounds = dragState?.bounds,
                                             )
                                             key(participant.collectorId) {
                                                 ParticipantColumn(
@@ -247,11 +259,11 @@ fun HeartwithScreen(
                                                     participant = participant,
                                                     position = position,
                                                     anchorPosition = if (draggingParticipantId == participant.collectorId) {
-                                                        dragAnchorIndex ?: position
+                                                        dragState.anchorIndex
                                                     } else {
                                                         position
                                                     },
-                                                    participantCount = lobbyParticipants.size,
+                                                    participantCount = renderParticipants.size,
                                                     expanded = participant.collectorId in expandedParticipantIds,
                                                     samples = seriesByParticipantId[participant.collectorId].orEmpty(),
                                                     status = seriesStatusByParticipantId[participant.collectorId].orEmpty(),
@@ -260,37 +272,38 @@ fun HeartwithScreen(
                                                     onSeriesWindowChange = onSeriesWindowChange,
                                                     onClick = { onParticipantClick(participant) },
                                                     onDragStart = {
-                                                        val currentParticipants = lobbyParticipants
-                                                        val currentPosition = currentParticipants.indexOfFirst {
-                                                            it.collectorId == participant.collectorId
-                                                        }.takeIf { it >= 0 } ?: position
-                                                        draggingParticipantId = participant.collectorId
-                                                        dragAnchorIndex = currentPosition
-                                                        dragPreviewTargetIndex = currentPosition
-                                                        dragFrozenBounds = participantBounds
+                                                        val frozenIds = renderParticipants.map { it.collectorId }
+                                                        val currentPosition = frozenIds.indexOf(participant.collectorId)
+                                                            .takeIf { it >= 0 } ?: position
+                                                        participantDragState = ParticipantDragState(
+                                                            collectorId = participant.collectorId,
+                                                            anchorIndex = currentPosition,
+                                                            targetIndex = currentPosition,
+                                                            sourceOrderIds = frozenIds,
+                                                            bounds = participantBounds,
+                                                        )
                                                     },
                                                     onDragTargetChange = { targetIndex ->
-                                                        dragPreviewTargetIndex = targetIndex
+                                                        participantDragState = participantDragState
+                                                            ?.takeIf { it.collectorId == participant.collectorId }
+                                                            ?.copy(targetIndex = targetIndex)
                                                     },
                                                     onDragCancel = {
-                                                        draggingParticipantId = null
-                                                        dragAnchorIndex = null
-                                                        dragPreviewTargetIndex = null
-                                                        dragFrozenBounds = null
+                                                        participantDragState = null
                                                     },
                                                     onReorder = { targetIndex ->
-                                                        val activeId = draggingParticipantId ?: participant.collectorId
-                                                        val committedParticipants = lobbyParticipants.moveToIndex(activeId, targetIndex)
-                                                        onParticipantReorder(committedParticipants.map { it.collectorId })
-                                                        draggingParticipantId = null
-                                                        dragAnchorIndex = null
-                                                        dragPreviewTargetIndex = null
-                                                        dragFrozenBounds = null
+                                                        val currentDragState = participantDragState
+                                                        val activeId = currentDragState?.collectorId ?: participant.collectorId
+                                                        val sourceIds = currentDragState?.sourceOrderIds ?: sourceParticipantIds
+                                                        val nextOrderIds = sourceIds.moveIdToIndex(activeId, targetIndex)
+                                                        onParticipantReorder(nextOrderIds)
+                                                        participantDragState = null
                                                     },
-                                                    orderedParticipantIds = lobbyParticipantIds,
-                                                    participantBounds = participantBounds,
+                                                    orderedParticipantIds = sourceParticipantIds,
+                                                    participantBounds = dragState?.bounds ?: participantBounds,
                                                     visualOffset = visualOffset,
                                                     visualReorderActive = draggingParticipantId != null,
+                                                    gestureOrderKey = gestureOrderKey,
                                                     recordBounds = draggingParticipantId == null,
                                                     onBoundsChanged = { bounds ->
                                                         participantBounds = participantBounds + (participant.collectorId to bounds)
@@ -674,6 +687,7 @@ private fun ParticipantColumn(
     participantBounds: Map<String, Rect>,
     visualOffset: Offset,
     visualReorderActive: Boolean,
+    gestureOrderKey: String,
     recordBounds: Boolean,
     onBoundsChanged: (Rect) -> Unit,
 ) {
@@ -697,6 +711,7 @@ private fun ParticipantColumn(
             participantBounds = participantBounds,
             visualOffset = visualOffset,
             visualReorderActive = visualReorderActive,
+            gestureOrderKey = gestureOrderKey,
             recordBounds = recordBounds,
             onBoundsChanged = onBoundsChanged,
         )
@@ -731,6 +746,7 @@ private fun ParticipantRow(
     participantBounds: Map<String, Rect>,
     visualOffset: Offset,
     visualReorderActive: Boolean,
+    gestureOrderKey: String,
     recordBounds: Boolean,
     onBoundsChanged: (Rect) -> Unit,
 ) {
@@ -740,6 +756,15 @@ private fun ParticipantRow(
     var dragStartBounds by remember(participant.collectorId) { mutableStateOf<Rect?>(null) }
     var dragTouchOffset by remember(participant.collectorId) { mutableStateOf(Offset.Zero) }
     var pendingTargetPosition by remember(participant.collectorId) { mutableStateOf(position) }
+    val latestPosition by rememberUpdatedState(position)
+    val latestAnchorPosition by rememberUpdatedState(anchorPosition)
+    val latestParticipantCount by rememberUpdatedState(participantCount)
+    val latestOrderedParticipantIds by rememberUpdatedState(orderedParticipantIds)
+    val latestParticipantBounds by rememberUpdatedState(participantBounds)
+    val latestOnDragStart by rememberUpdatedState(onDragStart)
+    val latestOnDragTargetChange by rememberUpdatedState(onDragTargetChange)
+    val latestOnDragCancel by rememberUpdatedState(onDragCancel)
+    val latestOnReorder by rememberUpdatedState(onReorder)
     val dragTargetThreshold = with(LocalDensity.current) { 10.dp.toPx() }
     val animatedVisualX by animateFloatAsState(
         targetValue = visualOffset.x,
@@ -755,32 +780,34 @@ private fun ParticipantRow(
 
     fun targetIndexForOffset(offset: Offset): Int {
         val startBounds = dragStartBounds ?: cardBounds
-        if (startBounds == null || participantCount <= 1 || orderedParticipantIds.isEmpty()) {
-            return anchorPosition
+        val currentOrderedIds = latestOrderedParticipantIds
+        if (startBounds == null || latestParticipantCount <= 1 || currentOrderedIds.isEmpty()) {
+            return latestAnchorPosition
         }
         if (abs(offset.x) + abs(offset.y) < dragTargetThreshold) {
-            return anchorPosition
+            return latestAnchorPosition
         }
         val draggedBounds = startBounds.translate(offset)
-        val collisionTarget = orderedParticipantIds
+        val currentBounds = latestParticipantBounds
+        val collisionTarget = currentOrderedIds
             .asSequence()
             .filter { it != participant.collectorId }
             .mapNotNull { collectorId ->
-                val bounds = participantBounds[collectorId] ?: return@mapNotNull null
+                val bounds = currentBounds[collectorId] ?: return@mapNotNull null
                 val area = draggedBounds.intersectionArea(bounds)
                 if (area > 0f) collectorId to area else null
             }
             .maxByOrNull { it.second }
             ?.first
-        val targetId = collisionTarget ?: orderedParticipantIds.minByOrNull { collectorId ->
+        val targetId = collisionTarget ?: currentOrderedIds.minByOrNull { collectorId ->
             if (collectorId == participant.collectorId) return@minByOrNull Float.MAX_VALUE
-            val bounds = participantBounds[collectorId] ?: return@minByOrNull Float.MAX_VALUE
+            val bounds = currentBounds[collectorId] ?: return@minByOrNull Float.MAX_VALUE
             val dx = draggedBounds.center.x - bounds.center.x
             val dy = draggedBounds.center.y - bounds.center.y
             dx * dx + dy * dy
         }
-        val targetIndex = orderedParticipantIds.indexOf(targetId)
-        return if (targetIndex >= 0) targetIndex.coerceIn(0, participantCount - 1) else anchorPosition
+        val targetIndex = currentOrderedIds.indexOf(targetId)
+        return if (targetIndex >= 0) targetIndex.coerceIn(0, latestParticipantCount - 1) else latestAnchorPosition
     }
 
     Card(
@@ -809,33 +836,33 @@ private fun ParticipantRow(
                 scaleY = if (dragging) 1.03f else 1f
                 shadowElevation = if (dragging) 18f else 0f
             }
-            .pointerInput(participant.collectorId, participantCount) {
+            .pointerInput(participant.collectorId, gestureOrderKey) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = { touchOffset ->
                         dragging = true
-                        pendingTargetPosition = position
+                        pendingTargetPosition = latestPosition
                         dragOffset = Offset.Zero
                         dragStartBounds = cardBounds
                         dragTouchOffset = touchOffset
-                        onDragStart()
+                        latestOnDragStart()
                     },
                     onDragEnd = {
                         val targetPosition = pendingTargetPosition
                         dragging = false
                         dragOffset = Offset.Zero
                         dragStartBounds = null
-                        if (targetPosition != anchorPosition) {
-                            onReorder(targetPosition)
+                        if (targetPosition != latestAnchorPosition) {
+                            latestOnReorder(targetPosition)
                         } else {
-                            onDragCancel()
+                            latestOnDragCancel()
                         }
                     },
                     onDragCancel = {
                         dragging = false
                         dragOffset = Offset.Zero
                         dragStartBounds = null
-                        pendingTargetPosition = anchorPosition
-                        onDragCancel()
+                        pendingTargetPosition = latestAnchorPosition
+                        latestOnDragCancel()
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
@@ -843,7 +870,7 @@ private fun ParticipantRow(
                         val nextTarget = targetIndexForOffset(dragOffset)
                         if (nextTarget != pendingTargetPosition) {
                             pendingTargetPosition = nextTarget
-                            onDragTargetChange(nextTarget)
+                            latestOnDragTargetChange(nextTarget)
                         }
                     },
                 )
@@ -1101,56 +1128,56 @@ private fun HeartRateChart(
                 val verticalPadding = 14f
                 val chartWidth = size.width - horizontalPadding * 2
                 val chartHeight = size.height - verticalPadding * 2
-                val points = boundedDisplaySamples.map { sample ->
+                val chartPoints = boundedDisplaySamples.map { sample ->
                     val x = horizontalPadding + ((sample.tMs - bounds.minTimeMs).toFloat() / timeSpan) * chartWidth
                     val y = verticalPadding + (1f - ((sample.bpm - bounds.minBpm).toFloat() / bpmSpan)) * chartHeight
-                    Offset(
-                        x.coerceIn(horizontalPadding, horizontalPadding + chartWidth),
-                        y.coerceIn(verticalPadding, verticalPadding + chartHeight),
+                    ChartPoint(
+                        sample = sample,
+                        offset = Offset(
+                            x.coerceIn(horizontalPadding, horizontalPadding + chartWidth),
+                            y.coerceIn(verticalPadding, verticalPadding + chartHeight),
+                        ),
                     )
                 }
-                if (points.size < 2) return@Canvas
+                val pointSegments = chartPoints.splitByTimeGap(chartGapThresholdMs(bounds))
+                if (pointSegments.sumOf { it.size } < 2) return@Canvas
 
-                val path = Path().apply {
-                    moveTo(points.first().x, points.first().y)
-                    for (index in 0 until points.lastIndex) {
-                        val previous = points.getOrElse(index - 1) { points[index] }
-                        val current = points[index]
-                        val next = points[index + 1]
-                        val afterNext = points.getOrElse(index + 2) { next }
-                        val control1 = Offset(
-                            current.x + (next.x - previous.x) / 6f,
-                            current.y + (next.y - previous.y) / 6f,
-                        )
-                        val control2 = Offset(
-                            next.x - (afterNext.x - current.x) / 6f,
-                            next.y - (afterNext.y - current.y) / 6f,
-                        )
-                        cubicTo(control1.x, control1.y, control2.x, control2.y, next.x, next.y)
-                    }
-                }
-                val fillPath = Path().apply {
-                    addPath(path)
-                    lineTo(points.last().x, size.height - verticalPadding)
-                    lineTo(points.first().x, size.height - verticalPadding)
-                    close()
-                }
                 clipRect(
                     left = 0f,
                     top = 0f,
                     right = size.width,
                     bottom = size.height,
                 ) {
-                    drawPath(fillPath, HyperBlue.copy(alpha = 0.11f))
-                    drawPath(
-                        path = path,
-                        color = HyperBlue,
-                        style = Stroke(width = 3.5f, cap = StrokeCap.Round),
-                    )
-                    val markerPoints = if (boundedDisplaySamples.size <= MAX_MARKER_POINTS) points else emptyList()
-                    markerPoints.forEach { point ->
-                        drawCircle(color = HyperBlue.copy(alpha = 0.2f), radius = 5.5f, center = point)
-                        drawCircle(color = HyperBlue, radius = 2.7f, center = point)
+                    pointSegments.forEach { segment ->
+                        if (segment.size >= 2) {
+                            val path = smoothPathForSegment(segment)
+                            val first = segment.first().offset
+                            val last = segment.last().offset
+                            val fillPath = Path().apply {
+                                addPath(path)
+                                lineTo(last.x, size.height - verticalPadding)
+                                lineTo(first.x, size.height - verticalPadding)
+                                close()
+                            }
+                            drawPath(fillPath, HyperBlue.copy(alpha = 0.11f))
+                            drawPath(
+                                path = path,
+                                color = HyperBlue,
+                                style = Stroke(width = 3.5f, cap = StrokeCap.Round),
+                            )
+                        } else {
+                            drawCircle(color = HyperBlue.copy(alpha = 0.2f), radius = 5.5f, center = segment.first().offset)
+                            drawCircle(color = HyperBlue, radius = 2.7f, center = segment.first().offset)
+                        }
+                    }
+                    val markerPoints = if (boundedDisplaySamples.size <= MAX_MARKER_POINTS) {
+                        chartPoints.map { it.offset }
+                    } else {
+                        emptyList()
+                    }
+                    markerPoints.forEach { offset ->
+                        drawCircle(color = HyperBlue.copy(alpha = 0.2f), radius = 5.5f, center = offset)
+                        drawCircle(color = HyperBlue, radius = 2.7f, center = offset)
                     }
                     focusedSample?.let { sample ->
                         val x = (
@@ -1241,6 +1268,71 @@ private fun smoothSamplesForChart(samples: List<SeriesSample>, windowSeconds: Lo
     if (smoothed.firstOrNull()?.tMs != first.tMs) smoothed.add(0, first)
     if (smoothed.lastOrNull()?.tMs != last.tMs) smoothed += last
     return smoothed
+}
+
+private data class ChartPoint(
+    val sample: SeriesSample,
+    val offset: Offset,
+)
+
+private fun chartGapThresholdMs(bounds: ChartBounds): Long {
+    val windowMs = bounds.maxTimeMs - bounds.minTimeMs
+    return when {
+        windowMs >= 24 * 60 * 60 * 1000L -> 12 * 60 * 1000L
+        windowMs >= 6 * 60 * 60 * 1000L -> 6 * 60 * 1000L
+        windowMs >= 60 * 60 * 1000L -> 2 * 60 * 1000L
+        else -> 45 * 1000L
+    }
+}
+
+private fun List<ChartPoint>.splitByTimeGap(maxGapMs: Long): List<List<ChartPoint>> {
+    if (isEmpty()) return emptyList()
+    val segments = mutableListOf<MutableList<ChartPoint>>()
+    var current = mutableListOf(first())
+    for (point in drop(1)) {
+        val previous = current.last()
+        if (point.sample.tMs - previous.sample.tMs > maxGapMs) {
+            segments += current
+            current = mutableListOf(point)
+        } else {
+            current += point
+        }
+    }
+    segments += current
+    return segments
+}
+
+private fun smoothPathForSegment(segment: List<ChartPoint>): Path {
+    val points = segment.map { it.offset }
+    return Path().apply {
+        moveTo(points.first().x, points.first().y)
+        if (points.size == 2) {
+            lineTo(points.last().x, points.last().y)
+            return@apply
+        }
+        for (index in 0 until points.lastIndex) {
+            val previous = points.getOrElse(index - 1) { points[index] }
+            val current = points[index]
+            val next = points[index + 1]
+            val afterNext = points.getOrElse(index + 2) { next }
+            val control1 = Offset(
+                x = current.x + (next.x - previous.x) / 6f,
+                y = current.y + (next.y - previous.y) / 6f,
+            )
+            val control2 = Offset(
+                x = next.x - (afterNext.x - current.x) / 6f,
+                y = next.y - (afterNext.y - current.y) / 6f,
+            )
+            cubicTo(
+                control1.x.coerceIn(current.x, next.x),
+                control1.y,
+                control2.x.coerceIn(current.x, next.x),
+                control2.y,
+                next.x,
+                next.y,
+            )
+        }
+    }
 }
 
 private data class SeriesWindowOption(
