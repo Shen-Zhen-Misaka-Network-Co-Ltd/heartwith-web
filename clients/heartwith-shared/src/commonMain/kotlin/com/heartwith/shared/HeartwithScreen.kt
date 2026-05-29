@@ -45,6 +45,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -120,7 +121,7 @@ fun HeartwithScreen(
         if (activeId == null || targetIndex == null) {
             lobbyParticipantIds
         } else {
-            lobbyParticipantIds.moveIdToIndex(activeId, targetIndex)
+            lobbyParticipantIds.swapIdWithIndex(activeId, targetIndex)
         }
     }
     Scaffold(
@@ -279,7 +280,7 @@ fun HeartwithScreen(
                                                     },
                                                     onReorder = { targetIndex ->
                                                         val activeId = draggingParticipantId ?: participant.collectorId
-                                                        val committedParticipants = lobbyParticipants.moveToIndex(activeId, targetIndex)
+                                                        val committedParticipants = lobbyParticipants.swapWithIndex(activeId, targetIndex)
                                                         onParticipantReorder(committedParticipants.map { it.collectorId })
                                                         draggingParticipantId = null
                                                         dragAnchorIndex = null
@@ -290,6 +291,7 @@ fun HeartwithScreen(
                                                     participantBounds = participantBounds,
                                                     visualOffset = visualOffset,
                                                     visualReorderActive = draggingParticipantId != null,
+                                                    recordBounds = draggingParticipantId == null,
                                                     onBoundsChanged = { bounds ->
                                                         participantBounds = participantBounds + (participant.collectorId to bounds)
                                                     },
@@ -672,6 +674,7 @@ private fun ParticipantColumn(
     participantBounds: Map<String, Rect>,
     visualOffset: Offset,
     visualReorderActive: Boolean,
+    recordBounds: Boolean,
     onBoundsChanged: (Rect) -> Unit,
 ) {
     Column(
@@ -694,6 +697,7 @@ private fun ParticipantColumn(
             participantBounds = participantBounds,
             visualOffset = visualOffset,
             visualReorderActive = visualReorderActive,
+            recordBounds = recordBounds,
             onBoundsChanged = onBoundsChanged,
         )
         if (expanded) {
@@ -727,6 +731,7 @@ private fun ParticipantRow(
     participantBounds: Map<String, Rect>,
     visualOffset: Offset,
     visualReorderActive: Boolean,
+    recordBounds: Boolean,
     onBoundsChanged: (Rect) -> Unit,
 ) {
     var cardBounds by remember(participant.collectorId) { mutableStateOf<Rect?>(null) }
@@ -735,6 +740,7 @@ private fun ParticipantRow(
     var dragStartBounds by remember(participant.collectorId) { mutableStateOf<Rect?>(null) }
     var dragTouchOffset by remember(participant.collectorId) { mutableStateOf(Offset.Zero) }
     var pendingTargetPosition by remember(participant.collectorId) { mutableStateOf(position) }
+    val dragTargetThreshold = with(LocalDensity.current) { 10.dp.toPx() }
     val animatedVisualX by animateFloatAsState(
         targetValue = visualOffset.x,
         animationSpec = tween(durationMillis = 140),
@@ -752,14 +758,25 @@ private fun ParticipantRow(
         if (startBounds == null || participantCount <= 1 || orderedParticipantIds.isEmpty()) {
             return anchorPosition
         }
-        val pointer = startBounds.topLeft + dragTouchOffset + offset
-        val containingTarget = orderedParticipantIds.firstOrNull { collectorId ->
-            participantBounds[collectorId]?.contains(pointer) == true
+        if (abs(offset.x) + abs(offset.y) < dragTargetThreshold) {
+            return anchorPosition
         }
-        val targetId = containingTarget ?: orderedParticipantIds.minByOrNull { collectorId ->
+        val draggedBounds = startBounds.translate(offset)
+        val collisionTarget = orderedParticipantIds
+            .asSequence()
+            .filter { it != participant.collectorId }
+            .mapNotNull { collectorId ->
+                val bounds = participantBounds[collectorId] ?: return@mapNotNull null
+                val area = draggedBounds.intersectionArea(bounds)
+                if (area > 0f) collectorId to area else null
+            }
+            .maxByOrNull { it.second }
+            ?.first
+        val targetId = collisionTarget ?: orderedParticipantIds.minByOrNull { collectorId ->
+            if (collectorId == participant.collectorId) return@minByOrNull Float.MAX_VALUE
             val bounds = participantBounds[collectorId] ?: return@minByOrNull Float.MAX_VALUE
-            val dx = pointer.x - bounds.center.x
-            val dy = pointer.y - bounds.center.y
+            val dx = draggedBounds.center.x - bounds.center.x
+            val dy = draggedBounds.center.y - bounds.center.y
             dx * dx + dy * dy
         }
         val targetIndex = orderedParticipantIds.indexOf(targetId)
@@ -772,7 +789,9 @@ private fun ParticipantRow(
             .onGloballyPositioned { coordinates ->
                 val bounds = coordinates.boundsInRoot()
                 cardBounds = bounds
-                onBoundsChanged(bounds)
+                if (recordBounds) {
+                    onBoundsChanged(bounds)
+                }
             }
             .zIndex(if (dragging) 1f else 0f)
             .graphicsLayer {
@@ -1384,6 +1403,14 @@ private fun sampleTimeLabel(tMs: Long): String {
 private fun windowLabel(seconds: Long): String =
     if (seconds >= 3600) "${seconds / 3600}h" else "${max(1L, seconds / 60)}m"
 
+private fun Rect.intersectionArea(other: Rect): Float {
+    val left = max(this.left, other.left)
+    val top = max(this.top, other.top)
+    val right = min(this.right, other.right)
+    val bottom = min(this.bottom, other.bottom)
+    return max(0f, right - left) * max(0f, bottom - top)
+}
+
 private fun participantVisualOffset(
     collectorId: String,
     draggingCollectorId: String?,
@@ -1421,7 +1448,7 @@ private fun chooseParticipantColumns(
     )
 }
 
-private fun List<String>.moveIdToIndex(
+private fun List<String>.swapIdWithIndex(
     collectorId: String,
     targetIndex: Int,
 ): List<String> {
@@ -1430,12 +1457,13 @@ private fun List<String>.moveIdToIndex(
     val boundedTarget = targetIndex.coerceIn(0, lastIndex)
     if (fromIndex == boundedTarget) return this
     val next = toMutableList()
-    val item = next.removeAt(fromIndex)
-    next.add(boundedTarget.coerceIn(0, next.size), item)
+    val item = next[fromIndex]
+    next[fromIndex] = next[boundedTarget]
+    next[boundedTarget] = item
     return next
 }
 
-private fun List<Participant>.moveToIndex(
+private fun List<Participant>.swapWithIndex(
     collectorId: String,
     targetIndex: Int,
 ): List<Participant> {
@@ -1444,8 +1472,9 @@ private fun List<Participant>.moveToIndex(
     val boundedTarget = targetIndex.coerceIn(0, lastIndex)
     if (fromIndex == boundedTarget) return this
     val next = toMutableList()
-    val item = next.removeAt(fromIndex)
-    next.add(boundedTarget.coerceIn(0, next.size), item)
+    val item = next[fromIndex]
+    next[fromIndex] = next[boundedTarget]
+    next[boundedTarget] = item
     return next
 }
 
