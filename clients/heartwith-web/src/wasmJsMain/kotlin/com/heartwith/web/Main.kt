@@ -337,6 +337,17 @@ fun main() {
                         ),
                     )
                 },
+                onParticipantReorder = { collectorId, targetIndex ->
+                    updateParticipantOrder(
+                        moveParticipantToVisibleIndex(
+                            currentOrderIds = participantOrderIds,
+                            allParticipants = displayParticipants,
+                            visibleParticipants = visibleParticipants,
+                            collectorId = collectorId,
+                            targetVisibleIndex = targetIndex,
+                        ),
+                    )
+                },
                 onStartCollect = {},
                 onRefresh = {
                     scope.launch {
@@ -447,6 +458,39 @@ private fun moveParticipantOrder(
         return fullOrder
     }
     val insertIndex = if (delta > 0) targetIndex + 1 else targetIndex
+    fullOrder.add(insertIndex.coerceIn(0, fullOrder.size), collectorId)
+    return fullOrder
+}
+
+private fun moveParticipantToVisibleIndex(
+    currentOrderIds: List<String>,
+    allParticipants: List<Participant>,
+    visibleParticipants: List<Participant>,
+    collectorId: String,
+    targetVisibleIndex: Int,
+): List<String> {
+    if (visibleParticipants.size < 2) {
+        return reconcileParticipantOrder(currentOrderIds, allParticipants)
+    }
+    val visibleIds = visibleParticipants.map { it.collectorId }
+    val fromVisibleIndex = visibleIds.indexOf(collectorId)
+    if (fromVisibleIndex < 0) {
+        return reconcileParticipantOrder(currentOrderIds, allParticipants)
+    }
+    val clampedTarget = targetVisibleIndex.coerceIn(0, visibleIds.lastIndex)
+    if (clampedTarget == fromVisibleIndex) {
+        return reconcileParticipantOrder(currentOrderIds, allParticipants)
+    }
+
+    val targetId = visibleIds[clampedTarget]
+    val fullOrder = reconcileParticipantOrder(currentOrderIds, allParticipants).toMutableList()
+    fullOrder.remove(collectorId)
+    val targetIndex = fullOrder.indexOf(targetId)
+    if (targetIndex < 0) {
+        fullOrder.add(collectorId)
+        return fullOrder
+    }
+    val insertIndex = if (clampedTarget > fromVisibleIndex) targetIndex + 1 else targetIndex
     fullOrder.add(insertIndex.coerceIn(0, fullOrder.size), collectorId)
     return fullOrder
 }

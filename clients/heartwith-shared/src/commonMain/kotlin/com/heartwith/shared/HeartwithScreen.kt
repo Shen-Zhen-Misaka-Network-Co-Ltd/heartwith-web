@@ -38,14 +38,19 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -96,6 +101,7 @@ fun HeartwithScreen(
     onOfflineFilterChange: (Long?) -> Unit = {},
     onParticipantClick: (Participant) -> Unit = {},
     onParticipantMove: (String, Int) -> Unit = { _, _ -> },
+    onParticipantReorder: (String, Int) -> Unit = { _, _ -> },
     onStartCollect: () -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -212,6 +218,7 @@ fun HeartwithScreen(
                                         participant = participant,
                                         position = rowIndex * participantColumns + columnIndex,
                                         columns = participantColumns,
+                                        participantCount = state.participants.size,
                                         expanded = participant.collectorId in expandedParticipantIds,
                                         samples = seriesByParticipantId[participant.collectorId].orEmpty(),
                                         status = seriesStatusByParticipantId[participant.collectorId].orEmpty(),
@@ -220,6 +227,7 @@ fun HeartwithScreen(
                                         onSeriesWindowChange = onSeriesWindowChange,
                                         onClick = { onParticipantClick(participant) },
                                         onMove = { delta -> onParticipantMove(participant.collectorId, delta) },
+                                        onReorder = { targetIndex -> onParticipantReorder(participant.collectorId, targetIndex) },
                                     )
                                 }
                             }
@@ -577,6 +585,7 @@ private fun ParticipantColumn(
     participant: Participant,
     position: Int,
     columns: Int,
+    participantCount: Int,
     expanded: Boolean,
     samples: List<SeriesSample>,
     status: String,
@@ -585,6 +594,7 @@ private fun ParticipantColumn(
     onSeriesWindowChange: (Long) -> Unit,
     onClick: () -> Unit,
     onMove: (Int) -> Unit,
+    onReorder: (Int) -> Unit,
 ) {
     Column(
         modifier = modifier,
@@ -595,9 +605,11 @@ private fun ParticipantColumn(
             participant = participant,
             position = position,
             columns = columns,
+            participantCount = participantCount,
             selected = expanded,
             onClick = onClick,
             onMove = onMove,
+            onReorder = onReorder,
         )
         if (expanded) {
             HeartRateSeriesCard(
@@ -619,39 +631,79 @@ private fun ParticipantRow(
     participant: Participant,
     position: Int,
     columns: Int,
+    participantCount: Int,
     selected: Boolean,
     onClick: () -> Unit,
     onMove: (Int) -> Unit,
+    onReorder: (Int) -> Unit,
 ) {
     val density = LocalDensity.current
-    val horizontalStepPx = with(density) { 96.dp.toPx() }
-    val verticalStepPx = with(density) { 112.dp.toPx() }
-    var dragOffset by remember(participant.collectorId, position, columns) { mutableStateOf(Offset.Zero) }
+    val gapPx = with(density) { 14.dp.toPx() }
+    var cardSize by remember(participant.collectorId) { mutableStateOf(IntSize.Zero) }
+    var dragging by remember(participant.collectorId) { mutableStateOf(false) }
+    var dragOffset by remember(participant.collectorId) { mutableStateOf(Offset.Zero) }
+    var anchorPosition by remember(participant.collectorId) { mutableStateOf(position) }
+    if (!dragging && anchorPosition != position) {
+        anchorPosition = position
+    }
+
+    fun targetIndexForOffset(offset: Offset): Int {
+        if (cardSize.width <= 0 || cardSize.height <= 0 || participantCount <= 1) return anchorPosition
+        val horizontalStepPx = cardSize.width + gapPx
+        val verticalStepPx = cardSize.height + gapPx
+        val anchorRow = anchorPosition / columns
+        val anchorColumn = anchorPosition % columns
+        val targetRow = (anchorRow + (offset.y / verticalStepPx).roundToInt()).coerceAtLeast(0)
+        val targetColumn = (anchorColumn + (offset.x / horizontalStepPx).roundToInt()).coerceIn(0, columns - 1)
+        return (targetRow * columns + targetColumn).coerceIn(0, participantCount - 1)
+    }
+
+    fun consumedOffsetForMove(fromIndex: Int, toIndex: Int): Offset {
+        if (cardSize.width <= 0 || cardSize.height <= 0) return Offset.Zero
+        val fromRow = fromIndex / columns
+        val fromColumn = fromIndex % columns
+        val toRow = toIndex / columns
+        val toColumn = toIndex % columns
+        return Offset(
+            x = (toColumn - fromColumn) * (cardSize.width + gapPx),
+            y = (toRow - fromRow) * (cardSize.height + gapPx),
+        )
+    }
+
     Card(
         modifier = modifier
             .heightIn(min = 104.dp)
-            .pointerInput(participant.collectorId, columns) {
+            .onSizeChanged { cardSize = it }
+            .zIndex(if (dragging) 1f else 0f)
+            .graphicsLayer {
+                translationX = dragOffset.x
+                translationY = dragOffset.y
+                scaleX = if (dragging) 1.03f else 1f
+                scaleY = if (dragging) 1.03f else 1f
+                shadowElevation = if (dragging) 18f else 0f
+            }
+            .pointerInput(participant.collectorId, columns, participantCount, cardSize) {
                 detectDragGestures(
-                    onDragStart = { dragOffset = Offset.Zero },
-                    onDragEnd = { dragOffset = Offset.Zero },
-                    onDragCancel = { dragOffset = Offset.Zero },
+                    onDragStart = {
+                        dragging = true
+                        anchorPosition = position
+                        dragOffset = Offset.Zero
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        dragOffset = Offset.Zero
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragOffset = Offset.Zero
+                    },
                     onDrag = { _, dragAmount ->
                         dragOffset += dragAmount
-                        while (dragOffset.x >= horizontalStepPx) {
-                            onMove(1)
-                            dragOffset = dragOffset.copy(x = dragOffset.x - horizontalStepPx)
-                        }
-                        while (dragOffset.x <= -horizontalStepPx) {
-                            onMove(-1)
-                            dragOffset = dragOffset.copy(x = dragOffset.x + horizontalStepPx)
-                        }
-                        while (dragOffset.y >= verticalStepPx) {
-                            onMove(columns)
-                            dragOffset = dragOffset.copy(y = dragOffset.y - verticalStepPx)
-                        }
-                        while (dragOffset.y <= -verticalStepPx) {
-                            onMove(-columns)
-                            dragOffset = dragOffset.copy(y = dragOffset.y + verticalStepPx)
+                        val targetIndex = targetIndexForOffset(dragOffset)
+                        if (targetIndex != anchorPosition) {
+                            onReorder(targetIndex)
+                            dragOffset -= consumedOffsetForMove(anchorPosition, targetIndex)
+                            anchorPosition = targetIndex
                         }
                     },
                 )
