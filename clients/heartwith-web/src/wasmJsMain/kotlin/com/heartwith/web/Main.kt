@@ -115,7 +115,6 @@ fun main() {
                 )
             }
             val latestState by rememberUpdatedState(state)
-            val latestParticipantOrderIds by rememberUpdatedState(participantOrderIds)
             val displayParticipants = state.participants.map { participant ->
                 participant
                     .withLatestSeriesSample(seriesByParticipantId[participant.collectorId].orEmpty())
@@ -131,9 +130,9 @@ fun main() {
             )
 
             fun updateParticipantOrder(next: List<String>) {
-                if (next == latestParticipantOrderIds) return
-                participantOrderIds = next
-                writeParticipantOrder(next)
+                val normalized = next.distinct()
+                participantOrderIds = normalized
+                writeParticipantOrder(normalized)
             }
 
             fun seriesWindowLabel(windowSeconds: Long): String =
@@ -231,7 +230,6 @@ fun main() {
                 runCatching { api.lobby() }
                     .onSuccess { lobby ->
                         val participants = lobby.participants
-                        updateParticipantOrder(reconcileParticipantOrder(latestParticipantOrderIds, participants))
                         state = state.copy(
                             localStatus = if (useEnglishLabels) "Synced lobby snapshot" else "已同步服务端聚合数据",
                             participants = participants,
@@ -256,7 +254,6 @@ fun main() {
                         runCatching { json.decodeFromString<LobbyEventEnvelope>(data) }
                             .onSuccess { event ->
                                 val participants = applyLobbyEvent(latestState.participants, event)
-                                updateParticipantOrder(reconcileParticipantOrder(latestParticipantOrderIds, participants))
                                 state = state.copy(
                                     localStatus = if (useEnglishLabels) "Live lobby events connected" else "已连接实时事件",
                                     participants = participants,
@@ -325,17 +322,6 @@ fun main() {
                             loadSeries(participant)
                         }
                     }
-                },
-                onParticipantMove = { collectorId, delta ->
-                    updateParticipantOrder(
-                        moveParticipantOrder(
-                            currentOrderIds = participantOrderIds,
-                            allParticipants = displayParticipants,
-                            visibleParticipants = visibleParticipants,
-                            collectorId = collectorId,
-                            delta = delta,
-                        ),
-                    )
                 },
                 onParticipantReorder = { visibleOrderIds ->
                     updateParticipantOrder(
@@ -428,69 +414,20 @@ private fun reconcileParticipantOrder(
     return current + missing
 }
 
-private fun moveParticipantOrder(
-    currentOrderIds: List<String>,
-    allParticipants: List<Participant>,
-    visibleParticipants: List<Participant>,
-    collectorId: String,
-    delta: Int,
-): List<String> {
-    if (delta == 0 || visibleParticipants.size < 2) {
-        return reconcileParticipantOrder(currentOrderIds, allParticipants)
-    }
-    val visibleIds = visibleParticipants.map { it.collectorId }
-    val fromVisibleIndex = visibleIds.indexOf(collectorId)
-    if (fromVisibleIndex < 0) {
-        return reconcileParticipantOrder(currentOrderIds, allParticipants)
-    }
-    val toVisibleIndex = (fromVisibleIndex + delta).coerceIn(0, visibleIds.lastIndex)
-    if (toVisibleIndex == fromVisibleIndex) {
-        return reconcileParticipantOrder(currentOrderIds, allParticipants)
-    }
-    val targetId = visibleIds[toVisibleIndex]
-    val fullOrder = reconcileParticipantOrder(currentOrderIds, allParticipants).toMutableList()
-    fullOrder.remove(collectorId)
-    val targetIndex = fullOrder.indexOf(targetId)
-    if (targetIndex < 0) {
-        fullOrder.add(collectorId)
-        return fullOrder
-    }
-    val insertIndex = if (delta > 0) targetIndex + 1 else targetIndex
-    fullOrder.add(insertIndex.coerceIn(0, fullOrder.size), collectorId)
-    return fullOrder
-}
-
 private fun mergeVisibleParticipantOrder(
     currentOrderIds: List<String>,
     allParticipants: List<Participant>,
     visibleOrderIds: List<String>,
 ): List<String> {
-    if (visibleOrderIds.size < 2) {
-        return reconcileParticipantOrder(currentOrderIds, allParticipants)
-    }
-    val fullOrder = reconcileParticipantOrder(currentOrderIds, allParticipants)
-    val fullOrderSet = fullOrder.toSet()
-    val orderedVisibleIds = visibleOrderIds.filter { it in fullOrderSet }.distinct()
+    val presentIds = allParticipants.map { it.collectorId }.toSet()
+    val orderedVisibleIds = visibleOrderIds.filter { it in presentIds }.distinct()
     if (orderedVisibleIds.size < 2) {
         return reconcileParticipantOrder(currentOrderIds, allParticipants)
     }
     val visibleSet = orderedVisibleIds.toSet()
-    val merged = mutableListOf<String>()
-    var insertedVisibleBlock = false
-    fullOrder.forEach { collectorId ->
-        if (collectorId in visibleSet) {
-            if (!insertedVisibleBlock) {
-                merged += orderedVisibleIds
-                insertedVisibleBlock = true
-            }
-        } else {
-            merged += collectorId
-        }
-    }
-    if (!insertedVisibleBlock) {
-        merged += orderedVisibleIds
-    }
-    return merged.distinct()
+    val hiddenIds = reconcileParticipantOrder(currentOrderIds, allParticipants)
+        .filterNot { it in visibleSet }
+    return orderedVisibleIds + hiddenIds
 }
 
 private fun defaultParticipantsForDisplay(participants: List<Participant>): List<Participant> =

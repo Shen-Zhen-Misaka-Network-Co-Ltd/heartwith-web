@@ -1,5 +1,7 @@
 package com.heartwith.shared
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -22,7 +24,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -41,17 +43,15 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -101,7 +101,6 @@ fun HeartwithScreen(
     offlineFilterSeconds: Long? = 60 * 60,
     onOfflineFilterChange: (Long?) -> Unit = {},
     onParticipantClick: (Participant) -> Unit = {},
-    onParticipantMove: (String, Int) -> Unit = { _, _ -> },
     onParticipantReorder: (List<String>) -> Unit = {},
     onStartCollect: () -> Unit,
     onRefresh: () -> Unit,
@@ -111,19 +110,17 @@ fun HeartwithScreen(
     var draggingParticipantId by remember { mutableStateOf<String?>(null) }
     var dragPreviewTargetIndex by remember { mutableStateOf<Int?>(null) }
     var dragAnchorIndex by remember { mutableStateOf<Int?>(null) }
-    val lobbyParticipants = remember(
-        state.participants,
-        draggingParticipantId,
-        dragPreviewTargetIndex,
-        dragAnchorIndex,
-    ) {
+    var dragFrozenBounds by remember { mutableStateOf<Map<String, Rect>?>(null) }
+    var participantBounds by remember { mutableStateOf(emptyMap<String, Rect>()) }
+    val lobbyParticipants = state.participants
+    val lobbyParticipantIds = lobbyParticipants.map { it.collectorId }
+    val dragPreviewParticipantIds = remember(lobbyParticipantIds, draggingParticipantId, dragPreviewTargetIndex) {
         val activeId = draggingParticipantId
         val targetIndex = dragPreviewTargetIndex
-        val anchorIndex = dragAnchorIndex
-        if (activeId == null || targetIndex == null || anchorIndex == null) {
-            state.participants
+        if (activeId == null || targetIndex == null) {
+            lobbyParticipantIds
         } else {
-            state.participants.previewMove(activeId, targetIndex)
+            lobbyParticipantIds.moveIdToIndex(activeId, targetIndex)
         }
     }
     Scaffold(
@@ -222,60 +219,86 @@ fun HeartwithScreen(
                             )
                         }
                     } else {
-                        itemsIndexed(lobbyParticipants.chunked(participantColumns), key = { rowIndex, _ ->
-                            "participant-row-$rowIndex"
-                        }) { rowIndex, rowParticipants ->
-                            Row(
+                        item {
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .widthIn(max = 1280.dp),
-                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(14.dp),
                             ) {
-                                rowParticipants.forEachIndexed { columnIndex, participant ->
-                                    key(participant.collectorId) {
-                                        ParticipantColumn(
-                                            modifier = Modifier.weight(1f),
-                                            participant = participant,
-                                            position = rowIndex * participantColumns + columnIndex,
-                                            anchorPosition = if (draggingParticipantId == participant.collectorId) {
-                                                dragAnchorIndex ?: (rowIndex * participantColumns + columnIndex)
-                                            } else {
-                                                rowIndex * participantColumns + columnIndex
-                                            },
-                                            columns = participantColumns,
-                                            participantCount = lobbyParticipants.size,
-                                            expanded = participant.collectorId in expandedParticipantIds,
-                                            samples = seriesByParticipantId[participant.collectorId].orEmpty(),
-                                            status = seriesStatusByParticipantId[participant.collectorId].orEmpty(),
-                                            seriesWindowSeconds = seriesWindowSeconds,
-                                            useEnglishLabels = english,
-                                            onSeriesWindowChange = onSeriesWindowChange,
-                                            onClick = { onParticipantClick(participant) },
-                                            onMove = { delta -> onParticipantMove(participant.collectorId, delta) },
-                                            onDragStart = {
-                                                draggingParticipantId = participant.collectorId
-                                                dragAnchorIndex = rowIndex * participantColumns + columnIndex
-                                                dragPreviewTargetIndex = rowIndex * participantColumns + columnIndex
-                                            },
-                                            onDragTargetChange = { targetIndex ->
-                                                dragPreviewTargetIndex = targetIndex
-                                            },
-                                            onDragCancel = {
-                                                draggingParticipantId = null
-                                                dragAnchorIndex = null
-                                                dragPreviewTargetIndex = null
-                                            },
-                                            onReorder = { targetIndex ->
-                                                onParticipantReorder(
-                                                    state.participants
-                                                        .previewMove(participant.collectorId, targetIndex)
-                                                        .map { it.collectorId },
+                                lobbyParticipants.chunked(participantColumns).forEachIndexed { rowIndex, rowParticipants ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                    ) {
+                                        rowParticipants.forEachIndexed { columnIndex, participant ->
+                                            val position = rowIndex * participantColumns + columnIndex
+                                            val visualOffset = participantVisualOffset(
+                                                collectorId = participant.collectorId,
+                                                draggingCollectorId = draggingParticipantId,
+                                                sourceOrderIds = lobbyParticipantIds,
+                                                previewOrderIds = dragPreviewParticipantIds,
+                                                frozenBounds = dragFrozenBounds,
+                                            )
+                                            key(participant.collectorId) {
+                                                ParticipantColumn(
+                                                    modifier = Modifier.weight(1f),
+                                                    participant = participant,
+                                                    position = position,
+                                                    anchorPosition = if (draggingParticipantId == participant.collectorId) {
+                                                        dragAnchorIndex ?: position
+                                                    } else {
+                                                        position
+                                                    },
+                                                    participantCount = lobbyParticipants.size,
+                                                    expanded = participant.collectorId in expandedParticipantIds,
+                                                    samples = seriesByParticipantId[participant.collectorId].orEmpty(),
+                                                    status = seriesStatusByParticipantId[participant.collectorId].orEmpty(),
+                                                    seriesWindowSeconds = seriesWindowSeconds,
+                                                    useEnglishLabels = english,
+                                                    onSeriesWindowChange = onSeriesWindowChange,
+                                                    onClick = { onParticipantClick(participant) },
+                                                    onDragStart = {
+                                                        val currentParticipants = lobbyParticipants
+                                                        val currentPosition = currentParticipants.indexOfFirst {
+                                                            it.collectorId == participant.collectorId
+                                                        }.takeIf { it >= 0 } ?: position
+                                                        draggingParticipantId = participant.collectorId
+                                                        dragAnchorIndex = currentPosition
+                                                        dragPreviewTargetIndex = currentPosition
+                                                        dragFrozenBounds = participantBounds
+                                                    },
+                                                    onDragTargetChange = { targetIndex ->
+                                                        dragPreviewTargetIndex = targetIndex
+                                                    },
+                                                    onDragCancel = {
+                                                        draggingParticipantId = null
+                                                        dragAnchorIndex = null
+                                                        dragPreviewTargetIndex = null
+                                                        dragFrozenBounds = null
+                                                    },
+                                                    onReorder = { targetIndex ->
+                                                        val activeId = draggingParticipantId ?: participant.collectorId
+                                                        val committedParticipants = lobbyParticipants.moveToIndex(activeId, targetIndex)
+                                                        onParticipantReorder(committedParticipants.map { it.collectorId })
+                                                        draggingParticipantId = null
+                                                        dragAnchorIndex = null
+                                                        dragPreviewTargetIndex = null
+                                                        dragFrozenBounds = null
+                                                    },
+                                                    orderedParticipantIds = lobbyParticipantIds,
+                                                    participantBounds = participantBounds,
+                                                    visualOffset = visualOffset,
+                                                    visualReorderActive = draggingParticipantId != null,
+                                                    onBoundsChanged = { bounds ->
+                                                        participantBounds = participantBounds + (participant.collectorId to bounds)
+                                                    },
                                                 )
-                                                draggingParticipantId = null
-                                                dragAnchorIndex = null
-                                                dragPreviewTargetIndex = null
-                                            },
-                                        )
+                                            }
+                                        }
+                                        repeat(participantColumns - rowParticipants.size) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
                                     }
                                 }
                             }
@@ -633,7 +656,6 @@ private fun ParticipantColumn(
     participant: Participant,
     position: Int,
     anchorPosition: Int,
-    columns: Int,
     participantCount: Int,
     expanded: Boolean,
     samples: List<SeriesSample>,
@@ -642,11 +664,15 @@ private fun ParticipantColumn(
     useEnglishLabels: Boolean,
     onSeriesWindowChange: (Long) -> Unit,
     onClick: () -> Unit,
-    onMove: (Int) -> Unit,
     onDragStart: () -> Unit,
     onDragTargetChange: (Int) -> Unit,
     onDragCancel: () -> Unit,
     onReorder: (Int) -> Unit,
+    orderedParticipantIds: List<String>,
+    participantBounds: Map<String, Rect>,
+    visualOffset: Offset,
+    visualReorderActive: Boolean,
+    onBoundsChanged: (Rect) -> Unit,
 ) {
     Column(
         modifier = modifier,
@@ -657,15 +683,18 @@ private fun ParticipantColumn(
             participant = participant,
             position = position,
             anchorPosition = anchorPosition,
-            columns = columns,
             participantCount = participantCount,
             selected = expanded,
             onClick = onClick,
-            onMove = onMove,
             onDragStart = onDragStart,
             onDragTargetChange = onDragTargetChange,
             onDragCancel = onDragCancel,
             onReorder = onReorder,
+            orderedParticipantIds = orderedParticipantIds,
+            participantBounds = participantBounds,
+            visualOffset = visualOffset,
+            visualReorderActive = visualReorderActive,
+            onBoundsChanged = onBoundsChanged,
         )
         if (expanded) {
             HeartRateSeriesCard(
@@ -687,76 +716,95 @@ private fun ParticipantRow(
     participant: Participant,
     position: Int,
     anchorPosition: Int,
-    columns: Int,
     participantCount: Int,
     selected: Boolean,
     onClick: () -> Unit,
-    onMove: (Int) -> Unit,
     onDragStart: () -> Unit,
     onDragTargetChange: (Int) -> Unit,
     onDragCancel: () -> Unit,
     onReorder: (Int) -> Unit,
+    orderedParticipantIds: List<String>,
+    participantBounds: Map<String, Rect>,
+    visualOffset: Offset,
+    visualReorderActive: Boolean,
+    onBoundsChanged: (Rect) -> Unit,
 ) {
-    val density = LocalDensity.current
-    val gapPx = with(density) { 14.dp.toPx() }
-    var cardSize by remember(participant.collectorId) { mutableStateOf(IntSize.Zero) }
+    var cardBounds by remember(participant.collectorId) { mutableStateOf<Rect?>(null) }
     var dragging by remember(participant.collectorId) { mutableStateOf(false) }
     var dragOffset by remember(participant.collectorId) { mutableStateOf(Offset.Zero) }
+    var dragStartBounds by remember(participant.collectorId) { mutableStateOf<Rect?>(null) }
+    var dragTouchOffset by remember(participant.collectorId) { mutableStateOf(Offset.Zero) }
     var pendingTargetPosition by remember(participant.collectorId) { mutableStateOf(position) }
+    val animatedVisualX by animateFloatAsState(
+        targetValue = visualOffset.x,
+        animationSpec = tween(durationMillis = 140),
+    )
+    val animatedVisualY by animateFloatAsState(
+        targetValue = visualOffset.y,
+        animationSpec = tween(durationMillis = 140),
+    )
     if (!dragging && pendingTargetPosition != position) {
         pendingTargetPosition = position
     }
 
     fun targetIndexForOffset(offset: Offset): Int {
-        if (cardSize.width <= 0 || cardSize.height <= 0 || participantCount <= 1) return anchorPosition
-        val horizontalStepPx = cardSize.width + gapPx
-        val verticalStepPx = cardSize.height + gapPx
-        val anchorRow = anchorPosition / columns
-        val anchorColumn = anchorPosition % columns
-        val targetRow = (anchorRow + (offset.y / verticalStepPx).roundToInt()).coerceAtLeast(0)
-        val targetColumn = (anchorColumn + (offset.x / horizontalStepPx).roundToInt()).coerceIn(0, columns - 1)
-        return (targetRow * columns + targetColumn).coerceIn(0, participantCount - 1)
-    }
-
-    fun layoutDisplacement(): Offset {
-        if (!dragging || cardSize.width <= 0 || cardSize.height <= 0) return Offset.Zero
-        val horizontalStepPx = cardSize.width + gapPx
-        val verticalStepPx = cardSize.height + gapPx
-        val anchorRow = anchorPosition / columns
-        val anchorColumn = anchorPosition % columns
-        val currentRow = position / columns
-        val currentColumn = position % columns
-        return Offset(
-            x = (currentColumn - anchorColumn) * horizontalStepPx,
-            y = (currentRow - anchorRow) * verticalStepPx,
-        )
+        val startBounds = dragStartBounds ?: cardBounds
+        if (startBounds == null || participantCount <= 1 || orderedParticipantIds.isEmpty()) {
+            return anchorPosition
+        }
+        val pointer = startBounds.topLeft + dragTouchOffset + offset
+        val containingTarget = orderedParticipantIds.firstOrNull { collectorId ->
+            participantBounds[collectorId]?.contains(pointer) == true
+        }
+        val targetId = containingTarget ?: orderedParticipantIds.minByOrNull { collectorId ->
+            val bounds = participantBounds[collectorId] ?: return@minByOrNull Float.MAX_VALUE
+            val dx = pointer.x - bounds.center.x
+            val dy = pointer.y - bounds.center.y
+            dx * dx + dy * dy
+        }
+        val targetIndex = orderedParticipantIds.indexOf(targetId)
+        return if (targetIndex >= 0) targetIndex.coerceIn(0, participantCount - 1) else anchorPosition
     }
 
     Card(
         modifier = modifier
             .heightIn(min = 104.dp)
-            .onSizeChanged { cardSize = it }
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInRoot()
+                cardBounds = bounds
+                onBoundsChanged(bounds)
+            }
             .zIndex(if (dragging) 1f else 0f)
             .graphicsLayer {
-                val displacement = layoutDisplacement()
-                translationX = dragOffset.x - displacement.x
-                translationY = dragOffset.y - displacement.y
+                translationX = when {
+                    dragging -> dragOffset.x
+                    visualReorderActive -> animatedVisualX
+                    else -> visualOffset.x
+                }
+                translationY = when {
+                    dragging -> dragOffset.y
+                    visualReorderActive -> animatedVisualY
+                    else -> visualOffset.y
+                }
                 scaleX = if (dragging) 1.03f else 1f
                 scaleY = if (dragging) 1.03f else 1f
                 shadowElevation = if (dragging) 18f else 0f
             }
-            .pointerInput(participant.collectorId, columns, participantCount, cardSize) {
+            .pointerInput(participant.collectorId, participantCount) {
                 detectDragGesturesAfterLongPress(
-                    onDragStart = {
+                    onDragStart = { touchOffset ->
                         dragging = true
                         pendingTargetPosition = position
                         dragOffset = Offset.Zero
+                        dragStartBounds = cardBounds
+                        dragTouchOffset = touchOffset
                         onDragStart()
                     },
                     onDragEnd = {
                         val targetPosition = pendingTargetPosition
                         dragging = false
                         dragOffset = Offset.Zero
+                        dragStartBounds = null
                         if (targetPosition != anchorPosition) {
                             onReorder(targetPosition)
                         } else {
@@ -766,6 +814,7 @@ private fun ParticipantRow(
                     onDragCancel = {
                         dragging = false
                         dragOffset = Offset.Zero
+                        dragStartBounds = null
                         pendingTargetPosition = anchorPosition
                         onDragCancel()
                     },
@@ -1335,6 +1384,29 @@ private fun sampleTimeLabel(tMs: Long): String {
 private fun windowLabel(seconds: Long): String =
     if (seconds >= 3600) "${seconds / 3600}h" else "${max(1L, seconds / 60)}m"
 
+private fun participantVisualOffset(
+    collectorId: String,
+    draggingCollectorId: String?,
+    sourceOrderIds: List<String>,
+    previewOrderIds: List<String>,
+    frozenBounds: Map<String, Rect>?,
+): Offset {
+    if (collectorId == draggingCollectorId || draggingCollectorId == null || frozenBounds == null) {
+        return Offset.Zero
+    }
+    val sourceIndex = sourceOrderIds.indexOf(collectorId)
+    val previewIndex = previewOrderIds.indexOf(collectorId)
+    if (sourceIndex < 0 || previewIndex < 0 || sourceIndex == previewIndex) return Offset.Zero
+    val sourceSlotId = sourceOrderIds.getOrNull(sourceIndex) ?: return Offset.Zero
+    val previewSlotId = sourceOrderIds.getOrNull(previewIndex) ?: return Offset.Zero
+    val sourceBounds = frozenBounds[sourceSlotId] ?: return Offset.Zero
+    val previewBounds = frozenBounds[previewSlotId] ?: return Offset.Zero
+    return Offset(
+        x = previewBounds.left - sourceBounds.left,
+        y = previewBounds.top - sourceBounds.top,
+    )
+}
+
 private fun chooseParticipantColumns(
     participantCount: Int,
     maxColumns: Int,
@@ -1349,7 +1421,21 @@ private fun chooseParticipantColumns(
     )
 }
 
-private fun List<Participant>.previewMove(
+private fun List<String>.moveIdToIndex(
+    collectorId: String,
+    targetIndex: Int,
+): List<String> {
+    val fromIndex = indexOf(collectorId)
+    if (fromIndex < 0 || isEmpty()) return this
+    val boundedTarget = targetIndex.coerceIn(0, lastIndex)
+    if (fromIndex == boundedTarget) return this
+    val next = toMutableList()
+    val item = next.removeAt(fromIndex)
+    next.add(boundedTarget.coerceIn(0, next.size), item)
+    return next
+}
+
+private fun List<Participant>.moveToIndex(
     collectorId: String,
     targetIndex: Int,
 ): List<Participant> {
