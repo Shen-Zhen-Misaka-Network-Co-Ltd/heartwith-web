@@ -2,7 +2,7 @@ package com.heartwith.shared
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -107,6 +108,24 @@ fun HeartwithScreen(
 ) {
     val readOnlyWeb = !canCollect
     val english = readOnlyWeb && useEnglishLabels
+    var draggingParticipantId by remember { mutableStateOf<String?>(null) }
+    var dragPreviewTargetIndex by remember { mutableStateOf<Int?>(null) }
+    var dragAnchorIndex by remember { mutableStateOf<Int?>(null) }
+    val lobbyParticipants = remember(
+        state.participants,
+        draggingParticipantId,
+        dragPreviewTargetIndex,
+        dragAnchorIndex,
+    ) {
+        val activeId = draggingParticipantId
+        val targetIndex = dragPreviewTargetIndex
+        val anchorIndex = dragAnchorIndex
+        if (activeId == null || targetIndex == null || anchorIndex == null) {
+            state.participants
+        } else {
+            state.participants.previewMove(activeId, targetIndex)
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -137,7 +156,7 @@ fun HeartwithScreen(
                 else -> 2
             }
             val participantColumns = chooseParticipantColumns(
-                participantCount = state.participants.size,
+                participantCount = lobbyParticipants.size,
                 maxColumns = maxParticipantColumns,
             )
             LazyColumn(
@@ -193,7 +212,7 @@ fun HeartwithScreen(
                             onOfflineFilterChange = onOfflineFilterChange,
                         )
                     }
-                    if (state.participants.isEmpty()) {
+                    if (lobbyParticipants.isEmpty()) {
                         item {
                             EmptyLobbyCard(
                                 modifier = Modifier
@@ -203,8 +222,8 @@ fun HeartwithScreen(
                             )
                         }
                     } else {
-                        itemsIndexed(state.participants.chunked(participantColumns), key = { _, row ->
-                            row.joinToString("|") { it.collectorId }
+                        itemsIndexed(lobbyParticipants.chunked(participantColumns), key = { rowIndex, _ ->
+                            "participant-row-$rowIndex"
                         }) { rowIndex, rowParticipants ->
                             Row(
                                 modifier = Modifier
@@ -213,22 +232,47 @@ fun HeartwithScreen(
                                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                             ) {
                                 rowParticipants.forEachIndexed { columnIndex, participant ->
-                                    ParticipantColumn(
-                                        modifier = Modifier.weight(1f),
-                                        participant = participant,
-                                        position = rowIndex * participantColumns + columnIndex,
-                                        columns = participantColumns,
-                                        participantCount = state.participants.size,
-                                        expanded = participant.collectorId in expandedParticipantIds,
-                                        samples = seriesByParticipantId[participant.collectorId].orEmpty(),
-                                        status = seriesStatusByParticipantId[participant.collectorId].orEmpty(),
-                                        seriesWindowSeconds = seriesWindowSeconds,
-                                        useEnglishLabels = english,
-                                        onSeriesWindowChange = onSeriesWindowChange,
-                                        onClick = { onParticipantClick(participant) },
-                                        onMove = { delta -> onParticipantMove(participant.collectorId, delta) },
-                                        onReorder = { targetIndex -> onParticipantReorder(participant.collectorId, targetIndex) },
-                                    )
+                                    key(participant.collectorId) {
+                                        ParticipantColumn(
+                                            modifier = Modifier.weight(1f),
+                                            participant = participant,
+                                            position = rowIndex * participantColumns + columnIndex,
+                                            anchorPosition = if (draggingParticipantId == participant.collectorId) {
+                                                dragAnchorIndex ?: (rowIndex * participantColumns + columnIndex)
+                                            } else {
+                                                rowIndex * participantColumns + columnIndex
+                                            },
+                                            columns = participantColumns,
+                                            participantCount = lobbyParticipants.size,
+                                            expanded = participant.collectorId in expandedParticipantIds,
+                                            samples = seriesByParticipantId[participant.collectorId].orEmpty(),
+                                            status = seriesStatusByParticipantId[participant.collectorId].orEmpty(),
+                                            seriesWindowSeconds = seriesWindowSeconds,
+                                            useEnglishLabels = english,
+                                            onSeriesWindowChange = onSeriesWindowChange,
+                                            onClick = { onParticipantClick(participant) },
+                                            onMove = { delta -> onParticipantMove(participant.collectorId, delta) },
+                                            onDragStart = {
+                                                draggingParticipantId = participant.collectorId
+                                                dragAnchorIndex = rowIndex * participantColumns + columnIndex
+                                                dragPreviewTargetIndex = rowIndex * participantColumns + columnIndex
+                                            },
+                                            onDragTargetChange = { targetIndex ->
+                                                dragPreviewTargetIndex = targetIndex
+                                            },
+                                            onDragCancel = {
+                                                draggingParticipantId = null
+                                                dragAnchorIndex = null
+                                                dragPreviewTargetIndex = null
+                                            },
+                                            onReorder = { targetIndex ->
+                                                onParticipantReorder(participant.collectorId, targetIndex)
+                                                draggingParticipantId = null
+                                                dragAnchorIndex = null
+                                                dragPreviewTargetIndex = null
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -584,6 +628,7 @@ private fun ParticipantColumn(
     modifier: Modifier,
     participant: Participant,
     position: Int,
+    anchorPosition: Int,
     columns: Int,
     participantCount: Int,
     expanded: Boolean,
@@ -594,6 +639,9 @@ private fun ParticipantColumn(
     onSeriesWindowChange: (Long) -> Unit,
     onClick: () -> Unit,
     onMove: (Int) -> Unit,
+    onDragStart: () -> Unit,
+    onDragTargetChange: (Int) -> Unit,
+    onDragCancel: () -> Unit,
     onReorder: (Int) -> Unit,
 ) {
     Column(
@@ -604,11 +652,15 @@ private fun ParticipantColumn(
             modifier = Modifier.fillMaxWidth(),
             participant = participant,
             position = position,
+            anchorPosition = anchorPosition,
             columns = columns,
             participantCount = participantCount,
             selected = expanded,
             onClick = onClick,
             onMove = onMove,
+            onDragStart = onDragStart,
+            onDragTargetChange = onDragTargetChange,
+            onDragCancel = onDragCancel,
             onReorder = onReorder,
         )
         if (expanded) {
@@ -630,11 +682,15 @@ private fun ParticipantRow(
     modifier: Modifier,
     participant: Participant,
     position: Int,
+    anchorPosition: Int,
     columns: Int,
     participantCount: Int,
     selected: Boolean,
     onClick: () -> Unit,
     onMove: (Int) -> Unit,
+    onDragStart: () -> Unit,
+    onDragTargetChange: (Int) -> Unit,
+    onDragCancel: () -> Unit,
     onReorder: (Int) -> Unit,
 ) {
     val density = LocalDensity.current
@@ -642,10 +698,8 @@ private fun ParticipantRow(
     var cardSize by remember(participant.collectorId) { mutableStateOf(IntSize.Zero) }
     var dragging by remember(participant.collectorId) { mutableStateOf(false) }
     var dragOffset by remember(participant.collectorId) { mutableStateOf(Offset.Zero) }
-    var anchorPosition by remember(participant.collectorId) { mutableStateOf(position) }
     var pendingTargetPosition by remember(participant.collectorId) { mutableStateOf(position) }
-    if (!dragging && anchorPosition != position) {
-        anchorPosition = position
+    if (!dragging && pendingTargetPosition != position) {
         pendingTargetPosition = position
     }
 
@@ -660,25 +714,40 @@ private fun ParticipantRow(
         return (targetRow * columns + targetColumn).coerceIn(0, participantCount - 1)
     }
 
+    fun layoutDisplacement(): Offset {
+        if (!dragging || cardSize.width <= 0 || cardSize.height <= 0) return Offset.Zero
+        val horizontalStepPx = cardSize.width + gapPx
+        val verticalStepPx = cardSize.height + gapPx
+        val anchorRow = anchorPosition / columns
+        val anchorColumn = anchorPosition % columns
+        val currentRow = position / columns
+        val currentColumn = position % columns
+        return Offset(
+            x = (currentColumn - anchorColumn) * horizontalStepPx,
+            y = (currentRow - anchorRow) * verticalStepPx,
+        )
+    }
+
     Card(
         modifier = modifier
             .heightIn(min = 104.dp)
             .onSizeChanged { cardSize = it }
             .zIndex(if (dragging) 1f else 0f)
             .graphicsLayer {
-                translationX = dragOffset.x
-                translationY = dragOffset.y
+                val displacement = layoutDisplacement()
+                translationX = dragOffset.x - displacement.x
+                translationY = dragOffset.y - displacement.y
                 scaleX = if (dragging) 1.03f else 1f
                 scaleY = if (dragging) 1.03f else 1f
                 shadowElevation = if (dragging) 18f else 0f
             }
             .pointerInput(participant.collectorId, columns, participantCount, cardSize) {
-                detectDragGestures(
+                detectDragGesturesAfterLongPress(
                     onDragStart = {
                         dragging = true
-                        anchorPosition = position
                         pendingTargetPosition = position
                         dragOffset = Offset.Zero
+                        onDragStart()
                     },
                     onDragEnd = {
                         val targetPosition = pendingTargetPosition
@@ -686,16 +755,24 @@ private fun ParticipantRow(
                         dragOffset = Offset.Zero
                         if (targetPosition != anchorPosition) {
                             onReorder(targetPosition)
+                        } else {
+                            onDragCancel()
                         }
                     },
                     onDragCancel = {
                         dragging = false
                         dragOffset = Offset.Zero
                         pendingTargetPosition = anchorPosition
+                        onDragCancel()
                     },
-                    onDrag = { _, dragAmount ->
+                    onDrag = { change, dragAmount ->
+                        change.consume()
                         dragOffset += dragAmount
-                        pendingTargetPosition = targetIndexForOffset(dragOffset)
+                        val nextTarget = targetIndexForOffset(dragOffset)
+                        if (nextTarget != pendingTargetPosition) {
+                            pendingTargetPosition = nextTarget
+                            onDragTargetChange(nextTarget)
+                        }
                     },
                 )
             },
@@ -1266,6 +1343,20 @@ private fun chooseParticipantColumns(
             if (remainder == 0) 0 else columns - remainder
         }.thenByDescending { columns -> columns },
     )
+}
+
+private fun List<Participant>.previewMove(
+    collectorId: String,
+    targetIndex: Int,
+): List<Participant> {
+    val fromIndex = indexOfFirst { it.collectorId == collectorId }
+    if (fromIndex < 0 || isEmpty()) return this
+    val boundedTarget = targetIndex.coerceIn(0, lastIndex)
+    if (fromIndex == boundedTarget) return this
+    val next = toMutableList()
+    val item = next.removeAt(fromIndex)
+    next.add(boundedTarget.coerceIn(0, next.size), item)
+    return next
 }
 
 private const val MAX_DIRECT_CHART_POINTS = 180
