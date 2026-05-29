@@ -337,14 +337,12 @@ fun main() {
                         ),
                     )
                 },
-                onParticipantReorder = { collectorId, targetIndex ->
+                onParticipantReorder = { visibleOrderIds ->
                     updateParticipantOrder(
-                        moveParticipantToVisibleIndex(
+                        mergeVisibleParticipantOrder(
                             currentOrderIds = participantOrderIds,
                             allParticipants = displayParticipants,
-                            visibleParticipants = visibleParticipants,
-                            collectorId = collectorId,
-                            targetVisibleIndex = targetIndex,
+                            visibleOrderIds = visibleOrderIds,
                         ),
                     )
                 },
@@ -462,37 +460,37 @@ private fun moveParticipantOrder(
     return fullOrder
 }
 
-private fun moveParticipantToVisibleIndex(
+private fun mergeVisibleParticipantOrder(
     currentOrderIds: List<String>,
     allParticipants: List<Participant>,
-    visibleParticipants: List<Participant>,
-    collectorId: String,
-    targetVisibleIndex: Int,
+    visibleOrderIds: List<String>,
 ): List<String> {
-    if (visibleParticipants.size < 2) {
+    if (visibleOrderIds.size < 2) {
         return reconcileParticipantOrder(currentOrderIds, allParticipants)
     }
-    val visibleIds = visibleParticipants.map { it.collectorId }
-    val fromVisibleIndex = visibleIds.indexOf(collectorId)
-    if (fromVisibleIndex < 0) {
+    val fullOrder = reconcileParticipantOrder(currentOrderIds, allParticipants)
+    val fullOrderSet = fullOrder.toSet()
+    val orderedVisibleIds = visibleOrderIds.filter { it in fullOrderSet }.distinct()
+    if (orderedVisibleIds.size < 2) {
         return reconcileParticipantOrder(currentOrderIds, allParticipants)
     }
-    val clampedTarget = targetVisibleIndex.coerceIn(0, visibleIds.lastIndex)
-    if (clampedTarget == fromVisibleIndex) {
-        return reconcileParticipantOrder(currentOrderIds, allParticipants)
+    val visibleSet = orderedVisibleIds.toSet()
+    val merged = mutableListOf<String>()
+    var insertedVisibleBlock = false
+    fullOrder.forEach { collectorId ->
+        if (collectorId in visibleSet) {
+            if (!insertedVisibleBlock) {
+                merged += orderedVisibleIds
+                insertedVisibleBlock = true
+            }
+        } else {
+            merged += collectorId
+        }
     }
-
-    val targetId = visibleIds[clampedTarget]
-    val fullOrder = reconcileParticipantOrder(currentOrderIds, allParticipants).toMutableList()
-    fullOrder.remove(collectorId)
-    val targetIndex = fullOrder.indexOf(targetId)
-    if (targetIndex < 0) {
-        fullOrder.add(collectorId)
-        return fullOrder
+    if (!insertedVisibleBlock) {
+        merged += orderedVisibleIds
     }
-    val insertIndex = if (clampedTarget > fromVisibleIndex) targetIndex + 1 else targetIndex
-    fullOrder.add(insertIndex.coerceIn(0, fullOrder.size), collectorId)
-    return fullOrder
+    return merged.distinct()
 }
 
 private fun defaultParticipantsForDisplay(participants: List<Participant>): List<Participant> =

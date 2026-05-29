@@ -102,7 +102,7 @@ fun HeartwithScreen(
     onOfflineFilterChange: (Long?) -> Unit = {},
     onParticipantClick: (Participant) -> Unit = {},
     onParticipantMove: (String, Int) -> Unit = { _, _ -> },
-    onParticipantReorder: (String, Int) -> Unit = { _, _ -> },
+    onParticipantReorder: (List<String>) -> Unit = {},
     onStartCollect: () -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -266,7 +266,11 @@ fun HeartwithScreen(
                                                 dragPreviewTargetIndex = null
                                             },
                                             onReorder = { targetIndex ->
-                                                onParticipantReorder(participant.collectorId, targetIndex)
+                                                onParticipantReorder(
+                                                    state.participants
+                                                        .previewMove(participant.collectorId, targetIndex)
+                                                        .map { it.collectorId },
+                                                )
                                                 draggingParticipantId = null
                                                 dragAnchorIndex = null
                                                 dragPreviewTargetIndex = null
