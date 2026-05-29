@@ -121,7 +121,7 @@ fun HeartwithScreen(
         if (activeId == null || targetIndex == null) {
             lobbyParticipantIds
         } else {
-            lobbyParticipantIds.swapIdWithIndex(activeId, targetIndex)
+            lobbyParticipantIds.moveIdToIndex(activeId, targetIndex)
         }
     }
     Scaffold(
@@ -280,7 +280,7 @@ fun HeartwithScreen(
                                                     },
                                                     onReorder = { targetIndex ->
                                                         val activeId = draggingParticipantId ?: participant.collectorId
-                                                        val committedParticipants = lobbyParticipants.swapWithIndex(activeId, targetIndex)
+                                                        val committedParticipants = lobbyParticipants.moveToIndex(activeId, targetIndex)
                                                         onParticipantReorder(committedParticipants.map { it.collectorId })
                                                         draggingParticipantId = null
                                                         dragAnchorIndex = null
@@ -1448,7 +1448,7 @@ private fun chooseParticipantColumns(
     )
 }
 
-private fun List<String>.swapIdWithIndex(
+private fun List<String>.moveIdToIndex(
     collectorId: String,
     targetIndex: Int,
 ): List<String> {
@@ -1457,13 +1457,12 @@ private fun List<String>.swapIdWithIndex(
     val boundedTarget = targetIndex.coerceIn(0, lastIndex)
     if (fromIndex == boundedTarget) return this
     val next = toMutableList()
-    val item = next[fromIndex]
-    next[fromIndex] = next[boundedTarget]
-    next[boundedTarget] = item
+    val item = next.removeAt(fromIndex)
+    next.add(boundedTarget.coerceIn(0, next.size), item)
     return next
 }
 
-private fun List<Participant>.swapWithIndex(
+private fun List<Participant>.moveToIndex(
     collectorId: String,
     targetIndex: Int,
 ): List<Participant> {
@@ -1472,9 +1471,8 @@ private fun List<Participant>.swapWithIndex(
     val boundedTarget = targetIndex.coerceIn(0, lastIndex)
     if (fromIndex == boundedTarget) return this
     val next = toMutableList()
-    val item = next[fromIndex]
-    next[fromIndex] = next[boundedTarget]
-    next[boundedTarget] = item
+    val item = next.removeAt(fromIndex)
+    next.add(boundedTarget.coerceIn(0, next.size), item)
     return next
 }
 
