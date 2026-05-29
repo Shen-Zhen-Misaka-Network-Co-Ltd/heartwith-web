@@ -643,8 +643,10 @@ private fun ParticipantRow(
     var dragging by remember(participant.collectorId) { mutableStateOf(false) }
     var dragOffset by remember(participant.collectorId) { mutableStateOf(Offset.Zero) }
     var anchorPosition by remember(participant.collectorId) { mutableStateOf(position) }
+    var pendingTargetPosition by remember(participant.collectorId) { mutableStateOf(position) }
     if (!dragging && anchorPosition != position) {
         anchorPosition = position
+        pendingTargetPosition = position
     }
 
     fun targetIndexForOffset(offset: Offset): Int {
@@ -656,18 +658,6 @@ private fun ParticipantRow(
         val targetRow = (anchorRow + (offset.y / verticalStepPx).roundToInt()).coerceAtLeast(0)
         val targetColumn = (anchorColumn + (offset.x / horizontalStepPx).roundToInt()).coerceIn(0, columns - 1)
         return (targetRow * columns + targetColumn).coerceIn(0, participantCount - 1)
-    }
-
-    fun consumedOffsetForMove(fromIndex: Int, toIndex: Int): Offset {
-        if (cardSize.width <= 0 || cardSize.height <= 0) return Offset.Zero
-        val fromRow = fromIndex / columns
-        val fromColumn = fromIndex % columns
-        val toRow = toIndex / columns
-        val toColumn = toIndex % columns
-        return Offset(
-            x = (toColumn - fromColumn) * (cardSize.width + gapPx),
-            y = (toRow - fromRow) * (cardSize.height + gapPx),
-        )
     }
 
     Card(
@@ -687,24 +677,25 @@ private fun ParticipantRow(
                     onDragStart = {
                         dragging = true
                         anchorPosition = position
+                        pendingTargetPosition = position
                         dragOffset = Offset.Zero
                     },
                     onDragEnd = {
+                        val targetPosition = pendingTargetPosition
                         dragging = false
                         dragOffset = Offset.Zero
+                        if (targetPosition != anchorPosition) {
+                            onReorder(targetPosition)
+                        }
                     },
                     onDragCancel = {
                         dragging = false
                         dragOffset = Offset.Zero
+                        pendingTargetPosition = anchorPosition
                     },
                     onDrag = { _, dragAmount ->
                         dragOffset += dragAmount
-                        val targetIndex = targetIndexForOffset(dragOffset)
-                        if (targetIndex != anchorPosition) {
-                            onReorder(targetIndex)
-                            dragOffset -= consumedOffsetForMove(anchorPosition, targetIndex)
-                            anchorPosition = targetIndex
-                        }
+                        pendingTargetPosition = targetIndexForOffset(dragOffset)
                     },
                 )
             },
