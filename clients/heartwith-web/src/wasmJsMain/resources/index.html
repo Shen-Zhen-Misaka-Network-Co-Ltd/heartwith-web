@@ -4,33 +4,304 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Heartwith</title>
+    <meta name="heartwith-build" content="20260602-font-cache-wakeup" />
+    <link rel="preload" href="./heartwith.js" as="script" />
+    <link rel="preload" href="./6e23e5428398b92da386.wasm" as="fetch" type="application/wasm" crossorigin />
+    <link rel="preload" href="./0b1c9548add40e46c2c7.wasm" as="fetch" type="application/wasm" crossorigin />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <style>
+      @font-face {
+        font-family: MiSans;
+        font-style: normal;
+        font-weight: 400 700;
+        font-display: block;
+        src: url('./composeResources/heartwith_web.heartwith_web.generated.resources/font/MiSans-Regular.woff2') format('woff2');
+      }
+      :root {
+        color-scheme: light dark;
+        --boot-bg: #fff;
+        --boot-fg: #111;
+        --boot-muted: rgba(17, 17, 17, 0.62);
+        --boot-track: rgba(17, 17, 17, 0.14);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --boot-bg: #000;
+          --boot-fg: #f5f5f5;
+          --boot-muted: rgba(245, 245, 245, 0.62);
+          --boot-track: rgba(245, 245, 245, 0.14);
+        }
+      }
       html, body, #ComposeTarget {
         width: 100%;
         height: 100%;
         margin: 0;
         padding: 0;
+        background: var(--boot-bg);
       }
       body {
         overflow: hidden;
-        background: #000;
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+        font-family: MiSans, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
           'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
       }
       canvas {
         display: block;
+        font-family: MiSans, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+          'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      }
+      .boot-loader {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: var(--boot-bg);
+        color: var(--boot-fg);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+          'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+        z-index: 10;
+      }
+      .boot-loader[data-visible='true'] {
+        display: flex;
+      }
+      .boot-panel {
+        width: min(320px, calc(100vw - 48px));
+      }
+      .boot-title {
+        font-size: 17px;
+        font-weight: 700;
+        line-height: 1.4;
+      }
+      .boot-summary {
+        margin-top: 8px;
+        color: var(--boot-muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .boot-track {
+        height: 4px;
+        margin-top: 18px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: var(--boot-track);
+      }
+      .boot-bar {
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: #0a84ff;
+        transition: width 180ms ease;
+      }
+      .boot-loader[data-phase='boot'] .boot-track {
+        display: none;
       }
     </style>
   </head>
   <body>
     <div id="ComposeTarget"></div>
+    <div id="BootLoader" class="boot-loader" data-visible="true" data-phase="boot" aria-live="polite">
+      <div class="boot-panel">
+        <div id="BootTitle" class="boot-title">正在启动 Heartwith</div>
+        <div id="BootSummary" class="boot-summary">正在加载应用资源。</div>
+        <div class="boot-track"><div id="BootProgress" class="boot-bar"></div></div>
+      </div>
+    </div>
     <script>
-      const script = document.createElement('script');
-      script.src = `heartwith.js?v=${Date.now().toString(36)}`;
-      document.body.appendChild(script);
+      const buildId = document.querySelector('meta[name="heartwith-build"]')?.content || 'dev';
+      const bootStartedAt = performance.now();
+      const bootDebug = new URLSearchParams(location.search).get('boot_debug') === '1';
+      const bootEvents = [];
+      window.__heartwithBootEvents = bootEvents;
+      const bootLog = (step, extra = {}) => {
+        const event = {
+          step,
+          t: Math.round(performance.now() - bootStartedAt),
+          ...extra,
+        };
+        bootEvents.push(event);
+        if (bootEvents.length > 200) bootEvents.shift();
+        try {
+          document.documentElement.dataset.heartwithBootEvents = JSON.stringify(bootEvents);
+        } catch (_) {
+        }
+        if (bootDebug) console.info('[HeartwithBoot]', JSON.stringify(event));
+      };
+      const fontCacheKey = 'heartwith_misans_ready_v3';
+      const composeFontUrl = './composeResources/heartwith_web.heartwith_web.generated.resources/font/MiSans-Regular.woff2';
+      const loader = document.getElementById('BootLoader');
+      const bootTitle = document.getElementById('BootTitle');
+      const bootSummary = document.getElementById('BootSummary');
+      const progress = document.getElementById('BootProgress');
+      const readCacheFlag = () => {
+        try {
+          return localStorage.getItem(fontCacheKey) === '1';
+        } catch (_) {
+          return false;
+        }
+      };
+      const writeCacheFlag = () => {
+        try {
+          localStorage.setItem(fontCacheKey, '1');
+        } catch (_) {
+        }
+      };
+      const cachedFont = readCacheFlag();
+      bootLog('inline-start', {
+        buildId,
+        cachedFont,
+        readyState: document.readyState,
+      });
+      let progressValue = 0;
+      let progressTimer = 0;
+      let heartwithStarted = false;
+
+      const setProgress = (value) => {
+        progressValue = Math.max(progressValue, Math.min(100, value));
+        if (progress) progress.style.width = `${progressValue}%`;
+      };
+      const setBootCopy = (title, summary) => {
+        if (bootTitle) bootTitle.textContent = title;
+        if (bootSummary) bootSummary.textContent = summary;
+      };
+      const timeout = (ms) => new Promise((_, reject) => {
+        window.setTimeout(() => reject(new Error('timeout')), ms);
+      });
+      const showFontLoader = () => {
+        if (!cachedFont && loader) {
+          bootLog('show-font-loader');
+          if (progressTimer) window.clearInterval(progressTimer);
+          loader.dataset.visible = 'true';
+          loader.dataset.phase = 'font';
+          setBootCopy('首次进入正在下载字体资源', '字体资源下载后会由浏览器缓存，之后打开会更快。');
+          setProgress(8);
+          progressTimer = window.setInterval(() => {
+            setProgress(progressValue + Math.max(1, (92 - progressValue) * 0.12));
+          }, 180);
+        }
+      };
+      const hideFontLoader = () => {
+        bootLog('font-ready');
+        if (progressTimer) window.clearInterval(progressTimer);
+        setProgress(100);
+        window.setTimeout(() => {
+          if (loader) {
+            loader.dataset.phase = 'boot';
+            setBootCopy('正在启动 Heartwith', '正在加载应用资源。');
+          }
+        }, cachedFont ? 0 : 120);
+      };
+      window.heartwithAppReady = () => {
+        window.__heartwithReady = true;
+        bootLog('app-ready-called', {
+          composeChildren: document.getElementById('ComposeTarget')?.childElementCount || 0,
+        });
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            bootLog('hide-loader', {
+              composeChildren: document.getElementById('ComposeTarget')?.childElementCount || 0,
+            });
+            if (loader) loader.dataset.visible = 'false';
+          });
+        });
+      };
+      const startHeartwith = () => {
+        if (heartwithStarted) return;
+        heartwithStarted = true;
+        bootLog('append-script');
+        const script = document.createElement('script');
+        script.src = 'heartwith.js';
+        script.addEventListener('load', () => bootLog('script-load'));
+        document.body.appendChild(script);
+      };
+      const prefetchComposeFont = async () => {
+        bootLog('font-fetch-start');
+        const response = await fetch(composeFontUrl, { cache: 'force-cache' });
+        if (!response.ok) throw new Error(`font ${response.status}`);
+        const total = Number(response.headers.get('content-length')) || 0;
+        if (!response.body || !total) {
+          await response.arrayBuffer();
+          setProgress(78);
+          bootLog('font-fetch-end', { mode: 'arrayBuffer' });
+          return;
+        }
+        const reader = response.body.getReader();
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received += value.byteLength;
+          setProgress(12 + Math.min(66, (received / total) * 66));
+        }
+        bootLog('font-fetch-end', { received, total });
+      };
+      const loadCssFont = async () => {
+        bootLog('css-font-load-start');
+        if (!document.fonts) return true;
+        await Promise.race([
+          Promise.all([
+            document.fonts.load('400 16px MiSans'),
+            document.fonts.load('700 16px MiSans'),
+          ]),
+          timeout(2500),
+        ]);
+        await Promise.race([document.fonts.ready, timeout(2500)]);
+        const ok = document.fonts.check('400 16px MiSans') && document.fonts.check('700 16px MiSans');
+        bootLog('css-font-load-end', { ok });
+        return ok;
+      };
+      const waitForFont = async () => {
+        startHeartwith();
+        if (cachedFont) {
+          bootLog('cached-font-fast-path');
+          loadCssFont()
+            .then((ok) => bootLog('cached-css-font-ready', { ok }))
+            .catch((error) => {
+              bootLog('cached-css-font-failed', { message: error?.message || String(error) });
+              try {
+                localStorage.removeItem(fontCacheKey);
+              } catch (_) {
+              }
+            });
+          return;
+        }
+        showFontLoader();
+        await prefetchComposeFont();
+        const fontReady = await loadCssFont();
+        if (fontReady) writeCacheFlag();
+        hideFontLoader();
+      };
+      waitForFont().catch(() => {
+        bootLog('boot-retry');
+        // Keep the loader instead of showing fallback glyphs. The retry is intentionally slow so
+        // a transient network/cache failure does not produce visible font swapping.
+        window.setTimeout(waitForFont, 1500);
+      });
+      window.setTimeout(() => {
+        if (window.__heartwithReady) return;
+        const retryKey = `heartwith_boot_retry_${buildId}`;
+        let retryCount = 0;
+        try {
+          retryCount = Number(sessionStorage.getItem(retryKey) || '0');
+        } catch (_) {
+        }
+        bootLog('boot-watchdog', { retryCount });
+        if (retryCount < 1) {
+          try {
+            sessionStorage.setItem(retryKey, String(retryCount + 1));
+          } catch (_) {
+          }
+          setBootCopy('启动较慢，正在重新加载资源', '检测到应用资源初始化未完成，正在自动重试。');
+          window.setTimeout(() => {
+            const retryUrl = new URL(window.location.href);
+            retryUrl.searchParams.set('boot_retry', Date.now().toString(36));
+            window.location.replace(retryUrl.toString());
+          }, 250);
+        } else {
+          setBootCopy('启动仍在继续', '资源初始化耗时较长，可以点刷新重试。');
+        }
+      }, 4500);
     </script>
   </body>
 </html>

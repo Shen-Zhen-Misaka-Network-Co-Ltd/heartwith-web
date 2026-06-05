@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import top.yukonga.miuix.kmp.basic.BasicComponent
@@ -88,6 +89,20 @@ private data class ParticipantDragState(
     val bounds: Map<String, Rect>,
 )
 
+private enum class ParticipantDetailTab {
+    HeartRate,
+    Sleep,
+}
+
+private data class SleepLocalDateTime(
+    val year: Int,
+    val month: Int,
+    val day: Int,
+    val hour: Int,
+    val minute: Int,
+    val dayNumber: Long,
+)
+
 @Composable
 fun HeartwithScreen(
     state: HeartwithUiState,
@@ -117,6 +132,7 @@ fun HeartwithScreen(
 ) {
     val readOnlyWeb = !canCollect
     val english = readOnlyWeb && useEnglishLabels
+    var selectedDetailTabs by remember { mutableStateOf(emptyMap<String, ParticipantDetailTab>()) }
     var participantDragState by remember { mutableStateOf<ParticipantDragState?>(null) }
     var participantBounds by remember { mutableStateOf(emptyMap<String, Rect>()) }
     val lobbyParticipants = state.participants
@@ -269,6 +285,12 @@ fun HeartwithScreen(
                                                     status = seriesStatusByParticipantId[participant.collectorId].orEmpty(),
                                                     seriesWindowSeconds = seriesWindowSeconds,
                                                     useEnglishLabels = english,
+                                                    selectedDetailTab = selectedDetailTabs[participant.collectorId]
+                                                        ?: ParticipantDetailTab.HeartRate,
+                                                    onDetailTabChange = { tab ->
+                                                        selectedDetailTabs = selectedDetailTabs +
+                                                            (participant.collectorId to tab)
+                                                    },
                                                     onSeriesWindowChange = onSeriesWindowChange,
                                                     onClick = { onParticipantClick(participant) },
                                                     onDragStart = {
@@ -677,6 +699,8 @@ private fun ParticipantColumn(
     status: String,
     seriesWindowSeconds: Long,
     useEnglishLabels: Boolean,
+    selectedDetailTab: ParticipantDetailTab,
+    onDetailTabChange: (ParticipantDetailTab) -> Unit,
     onSeriesWindowChange: (Long) -> Unit,
     onClick: () -> Unit,
     onDragStart: () -> Unit,
@@ -702,6 +726,7 @@ private fun ParticipantColumn(
             anchorPosition = anchorPosition,
             participantCount = participantCount,
             selected = expanded,
+            useEnglishLabels = useEnglishLabels,
             onClick = onClick,
             onDragStart = onDragStart,
             onDragTargetChange = onDragTargetChange,
@@ -716,13 +741,15 @@ private fun ParticipantColumn(
             onBoundsChanged = onBoundsChanged,
         )
         if (expanded) {
-            HeartRateSeriesCard(
+            ParticipantDetailCard(
                 modifier = Modifier.fillMaxWidth(),
                 participant = participant,
                 samples = samples,
                 status = status,
                 seriesWindowSeconds = seriesWindowSeconds,
                 useEnglishLabels = useEnglishLabels,
+                selectedTab = selectedDetailTab,
+                onTabChange = onDetailTabChange,
                 onSeriesWindowChange = onSeriesWindowChange,
             )
         }
@@ -737,6 +764,7 @@ private fun ParticipantRow(
     anchorPosition: Int,
     participantCount: Int,
     selected: Boolean,
+    useEnglishLabels: Boolean,
     onClick: () -> Unit,
     onDragStart: () -> Unit,
     onDragTargetChange: (Int) -> Unit,
@@ -885,42 +913,275 @@ private fun ParticipantRow(
         pressFeedbackType = PressFeedbackType.Sink,
         onClick = onClick,
     ) {
-        BasicComponent(
-            title = participant.displayName,
-            summary = "${participant.deviceModel} · ${participant.status}" +
-                (participant.lastSeenMs?.let { " · ${relativeSeenText(it)}" } ?: ""),
-            endActions = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val sleepLabel = sleepStatusLabel(participant.sleep)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(
+                    text = participant.displayName,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "${participant.deviceModel} · ${participant.status}" +
+                        (sleepLabel?.let { " · $it" } ?: "") +
+                        (participant.sleep?.durationMinutes?.let { sleepDurationText(it, useEnglishLabels) }?.let { " · $it" } ?: "") +
+                        (participant.lastSeenMs?.let { " · ${relativeSeenText(it)}" } ?: ""),
+                    fontSize = 14.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (sleepLabel != null) {
                     StatusTag(
-                        label = participant.status,
-                        backgroundColor = when (participant.status) {
-                            "online" -> HyperBlue.copy(alpha = 0.14f)
-                            "stale" -> Color(0xFFFFB020).copy(alpha = 0.18f)
-                            else -> MiuixTheme.colorScheme.surfaceVariant
-                        },
-                        contentColor = when (participant.status) {
-                            "online" -> HyperBlue
-                            "stale" -> Color(0xFF9A5A00)
-                            else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
-                        },
-                    )
-                    Text(
-                        text = participant.lastBpm?.let { "$it" } ?: "--",
-                        color = HyperBlue,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        label = sleepLabel,
+                        backgroundColor = sleepStatusBackground(participant.sleep),
+                        contentColor = sleepStatusContent(participant.sleep),
                     )
                 }
-            },
-            insideMargin = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
+                StatusTag(
+                    label = participant.status,
+                    backgroundColor = when (participant.status) {
+                        "online" -> HyperBlue.copy(alpha = 0.14f)
+                        "stale" -> Color(0xFFFFB020).copy(alpha = 0.18f)
+                        else -> MiuixTheme.colorScheme.surfaceVariant
+                    },
+                    contentColor = when (participant.status) {
+                        "online" -> HyperBlue
+                        "stale" -> Color(0xFF9A5A00)
+                        else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    },
+                )
+                Text(
+                    text = participant.lastBpm?.let { "$it" } ?: "--",
+                    color = HyperBlue,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+private fun sleepStatusLabel(status: SleepStatus?): String? = when (status?.state) {
+    "in_bed" -> "已上床 🛏"
+    "asleep" -> "睡眠中 💤"
+    "awake", "awake_in_bed" -> "清醒"
+    else -> null
+}
+
+private fun sleepStatusBackground(status: SleepStatus?): Color = when (status?.state) {
+    "asleep" -> Color(0xFF5B5CE2).copy(alpha = 0.18f)
+    "awake", "awake_in_bed" -> Color(0xFFFFB020).copy(alpha = 0.18f)
+    else -> HyperBlue.copy(alpha = 0.14f)
+}
+
+private fun sleepStatusContent(status: SleepStatus?): Color = when (status?.state) {
+    "asleep" -> Color(0xFFB9BAFF)
+    "awake", "awake_in_bed" -> Color(0xFF9A5A00)
+    else -> HyperBlue
+}
+
+private fun sleepDurationText(minutes: Long, useEnglishLabels: Boolean = false): String? {
+    if (minutes <= 0L) return null
+    val hours = minutes / 60L
+    val remain = minutes % 60L
+    return if (useEnglishLabels) {
+        if (hours > 0L) "${hours}h ${remain}m" else "${remain}m"
+    } else {
+        if (hours > 0L) "${hours}小时${remain}分" else "${remain}分钟"
+    }
+}
+
+private fun sleepClockText(tMs: Long?, useEnglishLabels: Boolean): String {
+    if (tMs == null || tMs <= 0L) return "--"
+    val dateTime = sleepLocalDateTime(tMs)
+    val today = sleepLocalDateTime(nowMs()).dayNumber
+    val clock = "${dateTime.hour.twoDigits()}:${dateTime.minute.twoDigits()}"
+    return when (dateTime.dayNumber) {
+        today -> if (useEnglishLabels) "Today $clock" else "今天 $clock"
+        today - 1L -> if (useEnglishLabels) "Yesterday $clock" else "昨天 $clock"
+        else -> "${dateTime.month.twoDigits()}-${dateTime.day.twoDigits()} $clock"
+    }
+}
+
+private fun sleepEventText(tMs: Long?, useEnglishLabels: Boolean): String {
+    if (tMs == null || tMs <= 0L) return "--"
+    val seconds = max(0L, (nowMs() - tMs) / 1000L)
+    return when {
+        seconds < 60L -> if (useEnglishLabels) "now" else "刚刚"
+        seconds < 60L * 60L -> {
+            val minutes = seconds / 60L
+            if (useEnglishLabels) "${minutes}m ago" else "${minutes}分钟前"
+        }
+        seconds < 24L * 60L * 60L -> {
+            val hours = seconds / 3600L
+            val minutes = (seconds % 3600L) / 60L
+            if (useEnglishLabels) {
+                if (minutes == 0L) "${hours}h ago" else "${hours}h ${minutes}m ago"
+            } else {
+                if (minutes == 0L) "${hours}小时前" else "${hours}小时${minutes}分钟前"
+            }
+        }
+        else -> {
+            val days = seconds / (24L * 60L * 60L)
+            if (useEnglishLabels) "${days}d ago" else "${days}天前"
+        }
+    }
+}
+
+private fun sleepBedAndSleepNotSeparated(sleep: SleepStatus): Boolean {
+    val bedAtMs = effectiveBedAtMs(sleep) ?: return false
+    val sleepAtMs = effectiveSleepAtMs(sleep) ?: return false
+    return abs(bedAtMs - sleepAtMs) < 60_000L
+}
+
+private fun sleepBedToSleepText(sleep: SleepStatus, useEnglishLabels: Boolean): String {
+    if (sleepBedAndSleepNotSeparated(sleep)) {
+        return if (useEnglishLabels) "Not separated" else "未单独区分"
+    }
+    return sleepDurationBetweenText(effectiveBedAtMs(sleep), effectiveSleepAtMs(sleep), useEnglishLabels) ?: "--"
+}
+
+private fun effectiveBedAtMs(sleep: SleepStatus): Long? = sleep.goBedAtMs ?: sleep.bedAtMs
+
+private fun effectiveSleepAtMs(sleep: SleepStatus): Long? = sleep.deviceBedAtMs ?: sleep.sleepAtMs
+
+private fun effectiveWakeAtMs(sleep: SleepStatus): Long? = sleep.deviceWakeAtMs ?: sleep.wakeAtMs ?: sleep.leaveBedAtMs
+
+private fun sleepTimelineGapWeight(startMs: Long?, endMs: Long?): Float {
+    if (startMs == null || endMs == null || startMs <= 0L || endMs <= startMs) {
+        return 0.28f
+    }
+    val minutes = max(1L, (endMs - startMs) / 60_000L)
+    return max(0.28f, ln(minutes.toDouble() + 1.0).toFloat())
+}
+
+private fun sleepDurationBetweenText(
+    startMs: Long?,
+    endMs: Long?,
+    useEnglishLabels: Boolean = false,
+): String? {
+    if (startMs == null || endMs == null || startMs <= 0L || endMs < startMs) return null
+    val minutes = (endMs - startMs) / 60_000L
+    return sleepDurationText(minutes, useEnglishLabels) ?: if (useEnglishLabels) "0m" else "0分钟"
+}
+
+private fun sleepLocalDateTime(tMs: Long): SleepLocalDateTime {
+    val localMs = tMs + 8L * 60L * 60L * 1000L
+    val dayNumber = localMs / 86_400_000L
+    val msOfDay = localMs % 86_400_000L
+    val hour = (msOfDay / 3_600_000L).toInt()
+    val minute = ((msOfDay % 3_600_000L) / 60_000L).toInt()
+    val date = civilDateFromEpochDay(dayNumber)
+    return SleepLocalDateTime(
+        year = date.year,
+        month = date.month,
+        day = date.day,
+        hour = hour,
+        minute = minute,
+        dayNumber = dayNumber,
+    )
+}
+
+private data class CivilDate(val year: Int, val month: Int, val day: Int)
+
+private fun civilDateFromEpochDay(dayNumber: Long): CivilDate {
+    val z = dayNumber + 719_468L
+    val era = if (z >= 0L) z / 146_097L else (z - 146_096L) / 146_097L
+    val doe = z - era * 146_097L
+    val yoe = (doe - doe / 1_460L + doe / 36_524L - doe / 146_096L) / 365L
+    val yearOfEraStart = yoe + era * 400L
+    val doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
+    val monthPrime = (5L * doy + 2L) / 153L
+    val day = (doy - (153L * monthPrime + 2L) / 5L + 1L).toInt()
+    val month = (monthPrime + if (monthPrime < 10L) 3L else -9L).toInt()
+    val year = (yearOfEraStart + if (month <= 2) 1L else 0L).toInt()
+    return CivilDate(year = year, month = month, day = day)
+}
+
+private fun Int.twoDigits(): String = if (this < 10) "0$this" else "$this"
+
+@Composable
+private fun ParticipantDetailCard(
+    modifier: Modifier,
+    participant: Participant,
+    samples: List<SeriesSample>,
+    status: String,
+    seriesWindowSeconds: Long,
+    useEnglishLabels: Boolean,
+    selectedTab: ParticipantDetailTab,
+    onTabChange: (ParticipantDetailTab) -> Unit,
+    onSeriesWindowChange: (Long) -> Unit,
+) {
+    Card(
+        modifier = modifier,
+        insideMargin = PaddingValues(16.dp),
+        pressFeedbackType = PressFeedbackType.None,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            DetailTabSelector(
+                selectedTab = selectedTab,
+                useEnglishLabels = useEnglishLabels,
+                onSelect = onTabChange,
+            )
+            when (selectedTab) {
+                ParticipantDetailTab.HeartRate -> HeartRateSeriesContent(
+                    participant = participant,
+                    samples = samples,
+                    status = status,
+                    seriesWindowSeconds = seriesWindowSeconds,
+                    useEnglishLabels = useEnglishLabels,
+                    onSeriesWindowChange = onSeriesWindowChange,
+                )
+                ParticipantDetailTab.Sleep -> SleepReportContent(
+                    participant = participant,
+                    useEnglishLabels = useEnglishLabels,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailTabSelector(
+    selectedTab: ParticipantDetailTab,
+    useEnglishLabels: Boolean,
+    onSelect: (ParticipantDetailTab) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        StatusTagButton(
+            modifier = Modifier.weight(1f),
+            label = if (useEnglishLabels) "Heart rate" else "心率",
+            selected = selectedTab == ParticipantDetailTab.HeartRate,
+            onClick = { onSelect(ParticipantDetailTab.HeartRate) },
+        )
+        StatusTagButton(
+            modifier = Modifier.weight(1f),
+            label = if (useEnglishLabels) "Sleep" else "睡眠",
+            selected = selectedTab == ParticipantDetailTab.Sleep,
+            onClick = { onSelect(ParticipantDetailTab.Sleep) },
         )
     }
 }
 
 @Composable
-private fun HeartRateSeriesCard(
-    modifier: Modifier,
-    participant: Participant?,
+private fun HeartRateSeriesContent(
+    participant: Participant,
     samples: List<SeriesSample>,
     status: String,
     seriesWindowSeconds: Long,
@@ -934,77 +1195,335 @@ private fun HeartRateSeriesCard(
         }
     val bounds = chartBounds(sortedSamples, seriesWindowSeconds)
     val averageBpm = if (sortedSamples.isEmpty()) null else sortedSamples.sumOf { it.bpm } / sortedSamples.size
-    Card(
-        modifier = modifier,
-        insideMargin = PaddingValues(16.dp),
-        pressFeedbackType = PressFeedbackType.None,
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(
-                        text = if (useEnglishLabels) "Heart-rate trend" else "心率趋势",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
-                    Text(
-                        text = participant?.displayName
-                            ?: if (useEnglishLabels) "Select a participant" else "选择一个用户",
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MiuixTheme.colorScheme.onSurface,
-                    )
-                }
-                SeriesWindowSelector(
-                    selectedSeconds = seriesWindowSeconds,
-                    useEnglishLabels = useEnglishLabels,
-                    onSelect = onSeriesWindowChange,
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = if (useEnglishLabels) "Heart-rate trend" else "心率趋势",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Text(
+                    text = participant.displayName,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MiuixTheme.colorScheme.onSurface,
                 )
             }
-            HeartRateChart(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(3.2f),
-                samples = sortedSamples,
-                displaySamples = smoothSamplesForChart(sortedSamples, seriesWindowSeconds),
-                bounds = bounds,
+            SeriesWindowSelector(
+                selectedSeconds = seriesWindowSeconds,
+                useEnglishLabels = useEnglishLabels,
+                onSelect = onSeriesWindowChange,
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = when {
-                        samples.size >= 2 -> {
-                            val minBpm = samples.minOf { it.bpm }
-                            val maxBpm = samples.maxOf { it.bpm }
-                            val avgText = averageBpm?.let { "avg $it" } ?: "avg --"
-                            if (useEnglishLabels) {
-                                "min $minBpm · max $maxBpm · $avgText · ${samples.size} samples"
-                            } else {
-                                "最低 $minBpm · 最高 $maxBpm · 平均 ${averageBpm ?: "--"} · ${samples.size} 个样本"
-                            }
+        }
+        HeartRateChart(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(3.2f),
+            samples = sortedSamples,
+            displaySamples = smoothSamplesForChart(sortedSamples, seriesWindowSeconds),
+            bounds = bounds,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = when {
+                    samples.size >= 2 -> {
+                        val minBpm = samples.minOf { it.bpm }
+                        val maxBpm = samples.maxOf { it.bpm }
+                        val avgText = averageBpm?.let { "avg $it" } ?: "avg --"
+                        if (useEnglishLabels) {
+                            "min $minBpm · max $maxBpm · $avgText · ${samples.size} samples"
+                        } else {
+                            "最低 $minBpm · 最高 $maxBpm · 平均 ${averageBpm ?: "--"} · ${samples.size} 个样本"
                         }
-                        else -> if (useEnglishLabels) "Waiting for more samples" else "等待更多样本"
-                    },
+                    }
+                    else -> if (useEnglishLabels) "Waiting for more samples" else "等待更多样本"
+                },
+                fontSize = 12.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            if (status.isNotBlank()) {
+                Text(
+                    text = status,
                     fontSize = 12.sp,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
-                if (status.isNotBlank()) {
-                    Text(
-                        text = status,
-                        fontSize = 12.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
-                }
             }
         }
+    }
+}
+
+@Composable
+private fun SleepReportContent(
+    participant: Participant,
+    useEnglishLabels: Boolean,
+) {
+    val sleep = participant.sleep
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = if (useEnglishLabels) "Sleep report" else "睡眠报告",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Text(
+                    text = participant.displayName,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+            }
+            sleepStatusLabel(sleep)?.let { label ->
+                StatusTag(
+                    label = label,
+                    backgroundColor = sleepStatusBackground(sleep),
+                    contentColor = sleepStatusContent(sleep),
+                )
+            }
+        }
+
+        if (sleep == null) {
+            SleepEmptyState(useEnglishLabels)
+            return@Column
+        }
+
+        SleepTimeline(sleep = sleep, useEnglishLabels = useEnglishLabels)
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SleepMetric(
+                modifier = Modifier.weight(1f),
+                label = if (useEnglishLabels) "Duration" else "睡眠时长",
+                value = sleep.durationMinutes?.let { sleepDurationText(it, useEnglishLabels) }
+                    ?: sleepDurationBetweenText(effectiveSleepAtMs(sleep), effectiveWakeAtMs(sleep), useEnglishLabels)
+                    ?: "--",
+            )
+            SleepMetric(
+                modifier = Modifier.weight(1f),
+                label = if (useEnglishLabels) "Updated" else "报告更新",
+                value = sleep.updatedAtMs?.let { sleepEventText(it, useEnglishLabels) } ?: "--",
+            )
+        }
+
+        sleep.observedAtMs?.let { observedAtMs ->
+            Text(
+                text = if (useEnglishLabels) {
+                    "Observed ${sleepEventText(observedAtMs, useEnglishLabels)}"
+                } else {
+                    "观测于 ${sleepEventText(observedAtMs, useEnglishLabels)}"
+                },
+                fontSize = 12.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SleepEmptyState(useEnglishLabels: Boolean) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 136.dp)
+            .background(
+                color = MiuixTheme.colorScheme.surface.copy(alpha = 0.42f),
+                shape = RoundedCornerShape(8.dp),
+            )
+            .padding(16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = if (useEnglishLabels) "No sleep report" else "暂无睡眠报告",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MiuixTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = if (useEnglishLabels) {
+                    "This collector has not uploaded sleep status yet."
+                } else {
+                    "此用户尚未上传睡眠状态，心率显示不受影响。"
+                },
+                fontSize = 12.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SleepTimeline(
+    sleep: SleepStatus,
+    useEnglishLabels: Boolean,
+) {
+    val bedAndSleepNotSeparated = sleepBedAndSleepNotSeparated(sleep)
+    val bedAtMs = effectiveBedAtMs(sleep)
+    val sleepAtMs = effectiveSleepAtMs(sleep)
+    val wakeAtMs = effectiveWakeAtMs(sleep)
+    val bedToSleepWeight = sleepTimelineGapWeight(bedAtMs, sleepAtMs)
+    val sleepToWakeWeight = sleepTimelineGapWeight(sleepAtMs, wakeAtMs)
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SleepTimelineNode(
+                label = if (useEnglishLabels) "Bed" else "上床",
+                value = sleepClockText(bedAtMs, useEnglishLabels),
+                caption = if (bedAndSleepNotSeparated) {
+                    if (useEnglishLabels) "same as sleep" else "同入睡时间"
+                } else {
+                    null
+                },
+                active = bedAtMs != null,
+            )
+            SleepTimelineLine(
+                modifier = Modifier.weight(bedToSleepWeight),
+                active = sleepAtMs != null || wakeAtMs != null,
+            )
+            SleepTimelineNode(
+                label = if (useEnglishLabels) "Sleep" else "入睡",
+                value = sleepClockText(sleepAtMs, useEnglishLabels),
+                active = sleepAtMs != null,
+            )
+            SleepTimelineLine(
+                modifier = Modifier.weight(sleepToWakeWeight),
+                active = wakeAtMs != null,
+            )
+            SleepTimelineNode(
+                label = if (useEnglishLabels) "Wake" else "清醒",
+                value = sleepClockText(wakeAtMs, useEnglishLabels),
+                active = wakeAtMs != null,
+            )
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SleepMetric(
+                modifier = Modifier.weight(1f),
+                label = if (useEnglishLabels) "Bed to sleep" else "上床到入睡",
+                value = sleepBedToSleepText(sleep, useEnglishLabels),
+            )
+            SleepMetric(
+                modifier = Modifier.weight(1f),
+                label = if (useEnglishLabels) "Sleep to wake" else "入睡到清醒",
+                value = sleepDurationBetweenText(sleepAtMs, wakeAtMs, useEnglishLabels) ?: "--",
+            )
+        }
+    }
+}
+
+@Composable
+private fun SleepTimelineNode(
+    label: String,
+    value: String,
+    caption: String? = null,
+    active: Boolean,
+) {
+    Column(
+        modifier = Modifier.width(82.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(18.dp)
+                .height(18.dp)
+                .background(
+                    color = if (active) HyperBlue else MiuixTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(9.dp),
+                ),
+        )
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MiuixTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false,
+        )
+        Text(
+            text = value,
+            fontSize = 11.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            maxLines = 1,
+            softWrap = false,
+        )
+        if (caption != null) {
+            Text(
+                text = caption,
+                fontSize = 10.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SleepTimelineLine(
+    modifier: Modifier,
+    active: Boolean,
+) {
+    Box(
+        modifier = modifier
+            .height(2.dp)
+            .background(
+                color = if (active) HyperBlue.copy(alpha = 0.48f) else MiuixTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(1.dp),
+            ),
+    )
+}
+
+@Composable
+private fun SleepMetric(
+    modifier: Modifier,
+    label: String,
+    value: String,
+) {
+    Column(
+        modifier = modifier
+            .background(
+                color = MiuixTheme.colorScheme.surface.copy(alpha = 0.42f),
+                shape = RoundedCornerShape(8.dp),
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            maxLines = 1,
+            softWrap = false,
+        )
+        Text(
+            text = value,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MiuixTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false,
+        )
     }
 }
 
@@ -1027,11 +1546,13 @@ private fun SeriesWindowSelector(
 
 @Composable
 private fun StatusTagButton(
+    modifier: Modifier = Modifier,
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
     Card(
+        modifier = modifier,
         colors = CardDefaults.defaultColors(
             color = if (selected) HyperBlue.copy(alpha = 0.16f) else MiuixTheme.colorScheme.surfaceVariant,
         ),

@@ -95,6 +95,22 @@ data class Participant(
     @SerialName("last_bpm") val lastBpm: Int? = null,
     @SerialName("last_seen_ms") val lastSeenMs: Long? = null,
     @SerialName("updated_at_ms") val updatedAtMs: Long? = null,
+    val sleep: SleepStatus? = null,
+)
+
+@Serializable
+data class SleepStatus(
+    val state: String,
+    @SerialName("observed_at_ms") val observedAtMs: Long? = null,
+    @SerialName("bed_at_ms") val bedAtMs: Long? = null,
+    @SerialName("sleep_at_ms") val sleepAtMs: Long? = null,
+    @SerialName("wake_at_ms") val wakeAtMs: Long? = null,
+    @SerialName("go_bed_at_ms") val goBedAtMs: Long? = null,
+    @SerialName("device_bed_at_ms") val deviceBedAtMs: Long? = null,
+    @SerialName("leave_bed_at_ms") val leaveBedAtMs: Long? = null,
+    @SerialName("device_wake_at_ms") val deviceWakeAtMs: Long? = null,
+    @SerialName("duration_minutes") val durationMinutes: Long? = null,
+    @SerialName("updated_at_ms") val updatedAtMs: Long? = null,
 )
 
 @Serializable

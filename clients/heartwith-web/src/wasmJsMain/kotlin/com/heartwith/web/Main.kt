@@ -23,8 +23,8 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import org.jetbrains.compose.resources.FontResource
 import org.jetbrains.compose.resources.ExperimentalResourceApi
+import org.jetbrains.compose.resources.FontResource
 import org.jetbrains.compose.resources.InternalResourceApi
 import org.jetbrains.compose.resources.ResourceItem
 import org.jetbrains.compose.resources.preloadFont
@@ -77,6 +77,18 @@ private external fun readLocalStorage(key: String): String
 )
 private external fun writeLocalStorage(key: String, value: String)
 
+@OptIn(ExperimentalWasmJsInterop::class)
+@JsFun(
+    """
+    () => {
+        if (typeof window !== 'undefined' && typeof window.heartwithAppReady === 'function') {
+            window.heartwithAppReady();
+        }
+    }
+    """,
+)
+private external fun notifyAppReady()
+
 @OptIn(
     ExperimentalComposeUiApi::class,
     ExperimentalWasmJsInterop::class,
@@ -86,9 +98,13 @@ private external fun writeLocalStorage(key: String, value: String)
 )
 fun main() {
     ComposeViewport(viewportContainerId = "ComposeTarget") {
-        val webFont by preloadFont(heartwithCjkFont)
-        val fontFamily = webFont?.let { FontFamily(it) } ?: FontFamily.Default
+        val webFont by preloadFont(heartwithMiSansFont)
+        val fontFamily = webFont?.let { FontFamily(it) } ?: return@ComposeViewport
         HeartwithTheme(fontFamily = fontFamily) {
+            LaunchedEffect(Unit) {
+                delay(120)
+                notifyAppReady()
+            }
             val api = remember { HeartwithApi("") }
             val scope = rememberCoroutineScope()
             val json = remember { Json { ignoreUnknownKeys = true } }
@@ -447,12 +463,12 @@ private fun statusRank(status: String): Int =
     }
 
 @OptIn(InternalResourceApi::class)
-private val heartwithCjkFont = FontResource(
-    id = "font:HeartwithCJK",
+private val heartwithMiSansFont = FontResource(
+    id = "font:MiSansRegular",
     items = setOf(
         ResourceItem(
             qualifiers = setOf(),
-            path = "composeResources/heartwith_web.heartwith_web.generated.resources/font/HeartwithCJK.ttf",
+            path = "composeResources/heartwith_web.heartwith_web.generated.resources/font/MiSans-Regular.woff2",
             offset = -1,
             size = -1,
         ),
