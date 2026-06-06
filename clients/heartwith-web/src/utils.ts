@@ -103,10 +103,13 @@ export function sleepLabel(sleep: SleepStatus | null | undefined): string {
 }
 
 export function sleepTimes(sleep: SleepStatus | null | undefined) {
+  const wake = sleep?.state === 'awake'
+    ? (sleep.device_wake_at_ms ?? sleep.wake_at_ms ?? sleep.leave_bed_at_ms ?? null)
+    : null
   return {
     goBed: sleep?.go_bed_at_ms ?? sleep?.bed_at_ms ?? null,
     deviceBed: sleep?.device_bed_at_ms ?? sleep?.sleep_at_ms ?? null,
-    wake: sleep?.device_wake_at_ms ?? sleep?.wake_at_ms ?? sleep?.leave_bed_at_ms ?? null,
+    wake,
     observed: sleep?.observed_at_ms ?? sleep?.updated_at_ms ?? null,
   }
 }
