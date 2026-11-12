@@ -28,9 +28,17 @@ let activePointerId: number | null = null
 let canvasPixelWidth = 0
 let canvasPixelHeight = 0
 
+// The page clock ticks every second, but one second is far below a pixel on the 1h–24h
+// windows. Advance the chart edge in roughly pixel-sized steps (rounded up so the newest
+// sample stays inside the range) instead of refiltering and repainting every second.
+const chartNowMs = computed(() => {
+  const stepMs = Math.max(1000, Math.round((props.windowSeconds * 1000) / 600))
+  return Math.ceil(props.nowMs / stepMs) * stepMs
+})
+
 const fullRange = computed<ChartRange>(() => ({
-  startMs: props.nowMs - props.windowSeconds * 1000,
-  endMs: props.nowMs,
+  startMs: chartNowMs.value - props.windowSeconds * 1000,
+  endMs: chartNowMs.value,
 }))
 
 const activeRange = computed<ChartRange>(() => {
@@ -306,7 +314,7 @@ function timeForCanvasX(canvasX: number, range: ChartRange) {
 
 function formatClock(ms: number): string {
   const date = new Date(ms)
-  const now = new Date(props.nowMs)
+  const now = new Date(chartNowMs.value)
   const time = new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -465,7 +473,7 @@ watch(visibleSamples, (samples) => {
     }
   }
 })
-watch([visibleSamples, activeRange, () => props.nowMs], draw, { flush: 'post' })
+watch([visibleSamples, activeRange], draw, { flush: 'post' })
 </script>
 
 <template>

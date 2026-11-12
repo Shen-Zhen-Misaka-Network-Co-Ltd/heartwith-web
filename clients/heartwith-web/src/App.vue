@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { MiuixButton } from 'miuix-vue'
 import HeartRateChart from './components/HeartRateChart.vue'
 import SleepReport from './components/SleepReport.vue'
-import { fetchParticipants, fetchSeries, openLobbyEvents } from './api'
+import { fetchParticipants, fetchSeries, openLobbyEvents, seriesMaxPoints } from './api'
 import type { DetailTab, LobbyEvent, Participant, SeriesSample, WindowSeconds } from './types'
 import {
   applyManualOrder,
@@ -303,12 +303,28 @@ function seriesFor(id: string, windowSeconds: WindowSeconds): SeriesSample[] {
   return seriesCache.get(`${id}:${windowSeconds}`)?.samples ?? []
 }
 
+// Live points appended after the last server fetch; they may be refined in place.
+const liveSamples = new WeakSet<SeriesSample>()
+
+function seriesBucketMs(windowSeconds: WindowSeconds): number {
+  return (windowSeconds * 1000) / seriesMaxPoints(windowSeconds)
+}
+
 function appendLiveSample(id: string, sample: SeriesSample) {
   for (const [key, entry] of seriesCache) {
     if (!key.startsWith(`${id}:`)) continue
     const last = entry.samples[entry.samples.length - 1]
     if (last && sample.t_ms <= last.t_ms) continue
-    entry.samples = [...entry.samples.slice(-900), sample]
+    const point = { ...sample }
+    liveSamples.add(point)
+    // Keep the series as dense as the server's buckets: within one bucket the newest live
+    // point replaces the previous live one instead of piling up raw points.
+    const sameBucket = last && liveSamples.has(last) && point.t_ms - last.t_ms < seriesBucketMs(entry.windowSeconds)
+    const kept = sameBucket ? entry.samples.slice(0, -1) : entry.samples
+    // Trim by time, not by count, so long windows keep their full history.
+    const cutoff = point.t_ms - entry.windowSeconds * 1000 - seriesBucketMs(entry.windowSeconds)
+    const start = kept.findIndex((existing) => existing.t_ms >= cutoff)
+    entry.samples = [...(start <= 0 ? kept : kept.slice(start)), point]
   }
 }
 

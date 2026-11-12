@@ -19,8 +19,12 @@ export async function fetchParticipants(signal?: AbortSignal): Promise<LobbyResp
   )
 }
 
+export function seriesMaxPoints(windowSeconds: number): number {
+  return windowSeconds >= 21_600 ? 420 : 600
+}
+
 export async function fetchSeries(collectorId: string, windowSeconds: number): Promise<SeriesResponse> {
-  const maxPoints = windowSeconds >= 21_600 ? 420 : 600
+  const maxPoints = seriesMaxPoints(windowSeconds)
   const params = new URLSearchParams({
     window_seconds: String(windowSeconds),
     max_points: String(maxPoints),
