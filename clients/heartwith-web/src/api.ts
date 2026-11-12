@@ -9,11 +9,12 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T
 }
 
-export async function fetchParticipants(): Promise<LobbyResponse> {
+export async function fetchParticipants(signal?: AbortSignal): Promise<LobbyResponse> {
   return parseJson<LobbyResponse>(
     await fetch(`${API_BASE}/lobby/participants`, {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
+      signal,
     }),
   )
 }
@@ -32,15 +33,26 @@ export async function fetchSeries(collectorId: string, windowSeconds: number): P
   )
 }
 
-export function openLobbyEvents(onEvent: (event: LobbyEvent) => void, onError: () => void): EventSource {
+export function openLobbyEvents(
+  onEvent: (event: LobbyEvent) => void,
+  onError: () => void,
+  onOpen: () => void,
+): EventSource {
   const events = new EventSource(`${API_BASE}/lobby/events`)
+  const fail = () => {
+    events.close()
+    onError()
+  }
+  events.onopen = () => {
+    onOpen()
+  }
   events.onmessage = (message) => {
     try {
       onEvent(JSON.parse(message.data) as LobbyEvent)
     } catch {
-      onError()
+      fail()
     }
   }
-  events.onerror = onError
+  events.onerror = fail
   return events
 }

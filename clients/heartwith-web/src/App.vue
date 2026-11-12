@@ -26,11 +26,21 @@ const windows = reactive(new Map<string, WindowSeconds>())
 const seriesCache = reactive(new Map<string, { windowSeconds: WindowSeconds; samples: SeriesSample[]; loadedAt: number }>())
 const loadingSeries = reactive(new Set<string>())
 const filterWindowMs = ref(60 * 60_000)
-const eventError = ref(false)
+const connectionState = ref<'live' | 'reconnecting' | 'paused' | 'dead'>('reconnecting')
+const refreshError = ref(false)
 const isRefreshing = ref(false)
 let eventSource: EventSource | null = null
 let clockTimer = 0
 let gridResizeObserver: ResizeObserver | null = null
+const retryBackoffMs = [2_000, 5_000, 10_000, 30_000]
+let retryStep = 0
+let retryAtMs = 0
+let connectionPaused = false
+let pauseTimer = 0
+let resumeFallbackTimer = 0
+let resumeSnapshotPending = false
+let lobbyEventRevision = 0
+let refreshController: AbortController | null = null
 
 type DragState = {
   activeId: string
@@ -85,6 +95,13 @@ const renderParticipants = computed(() =>
 const onlineCount = computed(
   () => participants.value.filter((participant) => effectiveStatus(participant, nowMs.value) !== 'offline').length,
 )
+
+const connectionLabel = computed(() => {
+  if (connectionState.value === 'live') return '已连接实时事件'
+  if (connectionState.value === 'paused') return '已暂停（页面在后台）'
+  if (connectionState.value === 'dead') return '实时连接已断开'
+  return '正在重连…'
+})
 
 const gridColumns = computed(() => {
   const count = renderParticipants.value.length
@@ -162,8 +179,12 @@ function updateParticipant(participant: Participant) {
 }
 
 function applyLobbyEvent(event: LobbyEvent) {
-  eventError.value = false
+  lobbyEventRevision += 1
+  connectionState.value = 'live'
+  retryStep = 0
   if (event.type === 'snapshot') {
+    resumeSnapshotPending = false
+    clearResumeFallback()
     participantsById.clear()
     event.participants.forEach(updateParticipant)
     nowMs.value = event.server_time_ms || Date.now()
@@ -172,15 +193,94 @@ function applyLobbyEvent(event: LobbyEvent) {
   }
 }
 
+function openEvents() {
+  eventSource?.close()
+  connectionState.value = 'reconnecting'
+  eventSource = openLobbyEvents(applyLobbyEvent, onEventsError, onEventsOpen)
+}
+
+function onEventsOpen() {
+  connectionState.value = 'live'
+}
+
+function onEventsError() {
+  if (connectionPaused) return
+  if (eventSource && eventSource.readyState !== 2) {
+    connectionState.value = 'reconnecting'
+    return
+  }
+  connectionState.value = retryStep >= retryBackoffMs.length - 1 ? 'dead' : 'reconnecting'
+  retryAtMs = Date.now() + retryBackoffMs[retryStep]
+  if (retryStep < retryBackoffMs.length - 1) retryStep += 1
+}
+
+function superviseEvents() {
+  if (connectionPaused || document.hidden) return
+  if (eventSource && eventSource.readyState !== 2) return
+  if (Date.now() < retryAtMs) return
+  openEvents()
+}
+
+function pauseEvents() {
+  pauseTimer = 0
+  connectionPaused = true
+  clearResumeFallback()
+  refreshController?.abort()
+  eventSource?.close()
+  eventSource = null
+  connectionState.value = 'paused'
+}
+
+function clearResumeFallback() {
+  if (resumeFallbackTimer) window.clearTimeout(resumeFallbackTimer)
+  resumeFallbackTimer = 0
+}
+
+function onVisibilityChange() {
+  if (pauseTimer) {
+    window.clearTimeout(pauseTimer)
+    pauseTimer = 0
+  }
+  if (document.hidden) {
+    clearResumeFallback()
+    pauseTimer = window.setTimeout(pauseEvents, 30_000)
+    return
+  }
+  if (!connectionPaused) return
+  connectionPaused = false
+  retryStep = 0
+  resumeSnapshotPending = true
+  openEvents()
+  clearResumeFallback()
+  resumeFallbackTimer = window.setTimeout(() => {
+    resumeFallbackTimer = 0
+    if (!document.hidden && !connectionPaused && resumeSnapshotPending) void refreshParticipants()
+  }, 5_000)
+  expandedIds.value.forEach((id) => {
+    if ((activeTabs.get(id) ?? 'heart') === 'heart') void ensureSeries(id, participantWindow(id), true)
+  })
+}
+
 async function refreshParticipants() {
+  if (isRefreshing.value) return
   isRefreshing.value = true
+  const eventRevision = lobbyEventRevision
+  const controller = new AbortController()
+  refreshController = controller
+  const timeout = window.setTimeout(() => controller.abort(), 15_000)
   try {
-    const lobby = await fetchParticipants()
+    const lobby = await fetchParticipants(controller.signal)
+    if (controller.signal.aborted) return
+    refreshError.value = false
+    if (eventRevision !== lobbyEventRevision) return
     participantsById.clear()
     lobby.participants.forEach(updateParticipant)
     nowMs.value = lobby.server_time_ms || Date.now()
-    eventError.value = false
+  } catch {
+    if (!connectionPaused) refreshError.value = true
   } finally {
+    window.clearTimeout(timeout)
+    refreshController = null
     isRefreshing.value = false
   }
 }
@@ -343,12 +443,14 @@ watch(expandedIds, (ids) => {
 
 onMounted(() => {
   void refreshParticipants()
-  eventSource = openLobbyEvents(applyLobbyEvent, () => {
-    eventError.value = true
-  })
+  openEvents()
   clockTimer = window.setInterval(() => {
+    if (document.hidden) return
     nowMs.value = Date.now()
+    superviseEvents()
   }, 1000)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  onVisibilityChange()
   window.addEventListener('pointermove', onPointerMove, { passive: false })
   window.addEventListener('pointerup', onPointerUp, { passive: false })
   window.addEventListener('pointercancel', onPointerCancel, { passive: false })
@@ -364,8 +466,13 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  connectionPaused = true
+  refreshController?.abort()
   eventSource?.close()
   if (clockTimer) window.clearInterval(clockTimer)
+  if (pauseTimer) window.clearTimeout(pauseTimer)
+  clearResumeFallback()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('pointermove', onPointerMove)
   window.removeEventListener('pointerup', onPointerUp)
   window.removeEventListener('pointercancel', onPointerCancel)
@@ -411,8 +518,9 @@ function estimateParticipantCardWidth(participant: Participant) {
     <section class="overview">
       <div class="live-card panel">
         <span class="badge">实时大厅</span>
-        <p>已连接实时事件</p>
-        <small v-if="eventError">SSE 连接异常，已保留手动刷新</small>
+        <p>{{ connectionLabel }}</p>
+        <small v-if="connectionState === 'dead'">SSE 连接异常，已保留手动刷新</small>
+        <small v-if="refreshError">手动刷新失败，请稍后重试</small>
       </div>
       <div class="stat-card panel">
         <span>在线</span>
