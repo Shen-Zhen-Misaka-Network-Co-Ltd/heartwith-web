@@ -32,7 +32,7 @@ export function effectiveStatus(participant: Participant, nowMs: number): string
   const lastSeen = participant.last_seen_ms ?? participant.updated_at_ms
   if (!lastSeen) return participant.status || 'offline'
   const age = nowMs - lastSeen
-  if (age <= 20_000) return 'online'
+  if (age <= 45_000) return 'online'
   if (age <= 120_000) return 'stale'
   return 'offline'
 }
