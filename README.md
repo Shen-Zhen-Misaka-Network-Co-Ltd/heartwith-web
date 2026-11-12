@@ -9,5 +9,8 @@ npm run dev
 npm run build
 ```
 
-The production build is written to `clients/heartwith-web/build/dist/wasmJs/productionExecutable`
-to keep the existing server deployment path compatible.
+The production build is written to `clients/heartwith-web/dist`. A sibling
+`heartwith-server` checkout probes `../heartwith-web/clients/heartwith-web/dist`;
+combined checkouts can still use `clients/heartwith-web/dist`. Set
+`HEARTWITH_WEB_DIR` in production when assets live elsewhere. The old
+`build/dist/wasmJs/productionExecutable` path remains a deployment fallback.

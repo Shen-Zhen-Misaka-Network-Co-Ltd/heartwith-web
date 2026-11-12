@@ -14,7 +14,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'build/dist/wasmJs/productionExecutable',
+    outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
     sourcemap: false,

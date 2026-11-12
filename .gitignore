@@ -5,6 +5,8 @@
 
 build/
 **/build/
+dist/
+**/dist/
 target/
 target-*/
 **/target/
